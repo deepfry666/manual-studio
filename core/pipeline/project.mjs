@@ -129,12 +129,22 @@ export async function readPlan(dir) {
     readJson(paths.uiContract, null),
   ]);
   if (!screenPlan) return null;
-  const screens = (Array.isArray(screenPlan) ? screenPlan : screenPlan.screens || []).map((screen, index) => ({
+  // 历史项目的规划格式不统一：数组 / { screens } / { flow }，行里用 id 或 screenId
+  let rows = Array.isArray(screenPlan) ? screenPlan : screenPlan.screens || screenPlan.flow || [];
+  if (!Array.isArray(rows)) rows = [];
+  rows = rows.map((row) => (typeof row === "string" ? { title: row } : row && typeof row === "object" ? row : {}));
+  if (!rows.length) {
+    // 规划里一屏都读不到时，按文案里的界面补齐，避免把已有文案当成「0 屏」
+    const content = await readJson(paths.content, null).catch(() => null);
+    rows = (content?.screens || []).map((screen) => ({ title: screen.title }));
+  }
+  const screens = rows.map((screen, index) => ({
     ...screen,
     id: screen.id || screen.screenId || screenId(index),
-    title: screen.title || screen.purpose || screenId(index),
+    title: screen.title || screen.name || screen.purpose || screenId(index),
   }));
-  return { profile, featureMap, screenPlan: { ...screenPlan, screens }, uiContract, screens };
+  if (!screens.length) return null;
+  return { profile, featureMap, screenPlan: { ...(Array.isArray(screenPlan) ? {} : screenPlan), screens }, uiContract, screens };
 }
 
 export async function listScreenFiles(dir) {

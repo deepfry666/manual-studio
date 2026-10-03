@@ -92,7 +92,13 @@ export function joinUrl(baseUrl, pathPart) {
 }
 
 function errorText(data) {
-  if (typeof data === "string") return data.slice(0, 600);
+  if (typeof data === "string") {
+    if (/<!doctype html|<html[\s>]/i.test(data)) {
+      const title = data.match(/<title>([^<]{0,120})<\/title>/i)?.[1]?.trim();
+      return `中转站返回了网页而不是接口数据${title ? `（${title}）` : ""}，可能是网关故障或地址填错`;
+    }
+    return data.slice(0, 600);
+  }
   if (!data || typeof data !== "object") return "";
   const candidates = [data.error?.message, data.error, data.message, data.msg, data.detail, data.data?.error, data.data?.message];
   for (const candidate of candidates) {
@@ -122,7 +128,7 @@ export function classifyHttpError(status, message, headers) {
     return { kind: "quota", retryAfterSec: parseRetryAfter(headers, text) };
   }
   if (looksLikeUnsupportedPixelSize(text)) return { kind: "size", allowedRatios: parseAllowedRatios(text) };
-  if (status === 404 || /model_not_found|model .* (?:not|isn't) (?:supported|found)|no such model|模型不存在/i.test(text)) {
+  if (status === 404 || /model_not_found|model .* (?:not|isn't) (?:supported|found)|model .* does not exist|no such model|模型不存在|无效的模型/i.test(text)) {
     return { kind: "config" };
   }
   if (/safety|moderation|content[_ ]policy|违规|敏感/i.test(text)) return { kind: "content" };
@@ -170,9 +176,10 @@ function normalizeImageItems(raw) {
   const list = Array.isArray(raw) ? raw.flat(Infinity) : raw === undefined ? [] : [raw];
   const result = [];
   for (const item of list) {
-    if (typeof item === "string") result.push(item.startsWith("data:") ? { dataUrl: item } : { url: item });
-    else if (item && typeof item === "object") {
-      if (typeof item.b64_json === "string") result.push({ b64: item.b64_json });
+    if (typeof item === "string") {
+      if (item) result.push(item.startsWith("data:") ? { dataUrl: item } : { url: item });
+    } else if (item && typeof item === "object") {
+      if (typeof item.b64_json === "string" && item.b64_json) result.push({ b64: item.b64_json });
       else if (typeof item.url === "string") result.push({ url: item.url });
       else if (Array.isArray(item.url)) item.url.forEach((url) => typeof url === "string" && result.push({ url }));
       else if (typeof item.image_url === "string") result.push({ url: item.image_url });
@@ -183,7 +190,8 @@ function normalizeImageItems(raw) {
 }
 
 async function materialize(item, fetchImpl, signal) {
-  if (item.b64) return Buffer.from(item.b64, "base64");
+  // 有的中转站在 b64_json 里也带 data: 前缀
+  if (item.b64) return Buffer.from(item.b64.replace(/^data:[^,]*,/, ""), "base64");
   if (item.dataUrl) return Buffer.from(item.dataUrl.replace(/^data:[^,]*,/, ""), "base64");
   const response = await request(fetchImpl, item.url, { signal });
   if (!response.ok) throw new ProviderError(`下载图片失败（HTTP ${response.status}）`, { kind: "server", status: response.status });
@@ -242,7 +250,9 @@ export async function runAttempt({
       taskId = foundTaskId;
       await onTaskId?.(taskId);
     } else {
-      throw new ProviderError(`线路返回里没有图片：${errorText(data)}`, { kind: "request" });
+      // 有的中转站把额度、尺寸等错误放在 HTTP 200 的响应体里，照样按内容分类（额度错误要触发冷却）
+      const message = errorText(data);
+      throw new ProviderError(`线路返回里没有图片：${message}`, classifyHttpError(400, message));
     }
   }
 
@@ -251,7 +261,7 @@ export async function runAttempt({
   const started = Date.now();
   while (Date.now() - started < maxPollMs) {
     await sleep(polling.intervalMs || 3000, signal);
-    const url = withQueryAuth(joinUrl(provider.baseUrl, fillTemplate(polling.path, { ...context, taskId })), mapping, apiKey);
+    const url = withQueryAuth(joinUrl(provider.baseUrl, fillTemplate(polling.path, { ...context, taskId: encodeURIComponent(taskId) })), mapping, apiKey);
     let response;
     try {
       response = await request(fetchImpl, url, { method: polling.method || "GET", headers: authHeaders(mapping, apiKey), signal });
@@ -263,11 +273,14 @@ export async function runAttempt({
     if (!response.ok) {
       if ([408, 409, 425, 429, 500, 502, 503, 504].includes(response.status)) continue;
       const message = errorText(data);
+      // 查询任务时的 404 是「任务不存在/已过期」，不是线路配置错，不能因此停用整条线路
+      if (response.status === 404) throw new ProviderError(`任务不存在或已过期：${message}`, { kind: "task-failed", status: 404, taskId });
       throw new ProviderError(message, { status: response.status, taskId, ...classifyHttpError(response.status, message) });
     }
     const status = String(readPath(data, polling.statusPath) ?? "").toLowerCase();
     if ((polling.failureValues || []).map((value) => value.toLowerCase()).includes(status)) {
-      throw new ProviderError(`任务失败（${status}）：${errorText(data)}`, { kind: "task-failed", taskId });
+      const message = errorText(data);
+      throw new ProviderError(`任务失败（${status}）：${message}`, { kind: classifyHttpError(400, message).kind === "content" ? "content" : "task-failed", taskId });
     }
     if (!(polling.successValues || []).map((value) => value.toLowerCase()).includes(status)) continue;
     const images = normalizeImageItems(readPath(data, polling.resultPath));

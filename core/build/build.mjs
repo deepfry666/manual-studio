@@ -14,7 +14,7 @@ export function assertSafeSoftwareName(name) {
   }
 }
 
-function buildManifest({ softwareName, content, withPdf, withCode, code, codeSource }) {
+function buildManifest({ softwareName, content, withPdf, withCode, code, codeSource, provenance }) {
   const artifacts = {};
   for (const [role, file] of Object.entries(expectedBundleFiles(softwareName, { withCode, withPdf }))) {
     artifacts[role] = `${softwareName}/${file}`;
@@ -35,6 +35,7 @@ function buildManifest({ softwareName, content, withPdf, withCode, code, codeSou
   if (content.featureTier) manifest.featureTier = content.featureTier;
   if (content.screenshotReview) manifest.screenshotReview = content.screenshotReview;
   if (withCode && code) manifest.codeSource = { path: codeSource.path, extensions: code.extensions, fileCount: code.fileCount, lineCount: code.lineCount };
+  if (provenance) manifest.provenance = provenance;
   return manifest;
 }
 
@@ -88,7 +89,7 @@ async function moveDir(from, to) {
   }
 }
 
-export async function buildBundle({ projectDir, softwareName, content, codeSource, txtFields, excludeDirs, floor = 300, extraBrandTokens = [], stagingRoot, onLog = () => {} }) {
+export async function buildBundle({ projectDir, softwareName, content, codeSource, txtFields, excludeDirs, floor = 300, extraBrandTokens = [], stagingRoot, provenance, onLog = () => {} }) {
   assertSafeSoftwareName(softwareName);
   const paths = projectPaths(projectDir);
   const stamp = timestampSlug();
@@ -148,7 +149,7 @@ export async function buildBundle({ projectDir, softwareName, content, codeSourc
     throw error;
   }
 
-  const manifest = buildManifest({ softwareName, content, withPdf, withCode, code, codeSource });
+  const manifest = buildManifest({ softwareName, content, withPdf, withCode, code, codeSource, provenance });
   const regionIndex = buildRegionIndex({ softwareName, content, regionFill, withPdf, withCode, code });
 
   onLog("替换正式交付包");

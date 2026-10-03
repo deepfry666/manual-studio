@@ -88,6 +88,19 @@ test("端到端：新建项目一路跑到交付包（含代码来源、设计�
   // 项目文件夹里没有本软件的隐藏状态文件
   assert.equal(fs.existsSync(path.join(dir, ".studio")), false);
 
+  // 溯源：项目文件夹里有生成记录，manifest 里有每屏来源和用到的大模型
+  const record = JSON.parse(fs.readFileSync(path.join(dir, "generation-record.json"), "utf8"));
+  assert.equal(record.screens["screen-01"].providerName, "CPA");
+  assert.equal(record.screens["screen-01"].model, "gpt-image-2.5");
+  assert.match(record.screens["screen-01"].imageSha256, /^[a-f0-9]{64}$/);
+  assert.equal(record.gate["screen-01"].method, "vision");
+  assert.equal(record.llm.plan.model, "mock-text");
+  assert.equal(record.llm.gate.model, "mock-vision");
+  assert.ok(record.history.some((event) => event.event === "build"));
+  assert.equal(manifest.provenance.screens["screen-02"].provider, "CPA");
+  assert.equal(manifest.provenance.screens["screen-02"].gate, "vision");
+  assert.match(manifest.provenance.builtBy, /软件指南生成器 \d/);
+
   // 再跑一次：什么都不变，不重新生图、不重新调大模型
   const llmCallsBefore = ctx.llm.calls.length;
   const second = await ctx.core.run(dir);
@@ -221,4 +234,29 @@ test("重生截图后，这一屏的说明按新截图重写；人工改过的�
   assert.equal(after.screens[2].text, edited, "人工改过的第三屏保留");
   const project = await ctx.core.getProject(dir);
   assert.ok(project.state.warnings.some((warning) => warning.includes("截图已更换") && warning.includes("screen-03")));
+});
+
+test("历史项目改名：不重新生图，只重新验收，提示词里的旧名字换成新名字", { timeout: 180_000 }, async (t) => {
+  const source = path.join(os.homedir(), "Desktop", "软件指南生成", "心云购电商广告运营平台 V1.0");
+  if (!fs.existsSync(source)) {
+    t.skip("本机没有这个历史项目");
+    return;
+  }
+  const ctx = await setupCore();
+  t.after(ctx.close);
+  const copy = path.join(ctx.workspace, "心云购电商广告运营平台 V1.0");
+  await fsp.cp(source, copy, { recursive: true });
+  await ctx.core.importProjects([copy]);
+  const newDir = await ctx.core.renameSoftware(copy, "云购运营助手 V2.0");
+  await ctx.core.actions.updateRequest(newDir, { allowDropCodeDoc: true });
+  const result = await ctx.core.run(newDir);
+  const project = await ctx.core.getProject(newDir);
+  assert.equal(result.status, "done", project.state.lastError || "");
+  assert.equal(ctx.relay.submits().length, 0, "改名不重新生图");
+  assert.equal(ctx.llm.calls.filter((call) => call.step === "gate").length, 7, "按新名字重新验收 7 张");
+  assert.equal(ctx.llm.calls.filter((call) => call.step === "plan" || call.step === "content").length, 0);
+  const prompt = fs.readFileSync(path.join(newDir, "prompts", "screen-02.md"), "utf8");
+  assert.match(prompt, /云购运营助手 V2\.0/);
+  assert.doesNotMatch(prompt, /心云购电商广告运营平台 V1\.0/);
+  assert.ok(fs.existsSync(path.join(newDir, "云购运营助手 V2.0", "云购运营助手 V2.0指南.docx")));
 });

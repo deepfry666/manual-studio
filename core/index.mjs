@@ -59,7 +59,8 @@ export async function createCore({ dataDir, cipher, toPng, visionImage, fetchImp
     toPng,
     onEvent: (event) => emit({ ...event, kind: event.type, type: "image" }),
   });
-  const pipeline = createPipeline({ settingsStore, secrets, gateway, projectStore, llmLog, emit, fetchImpl, visionImage });
+  const appVersion = (await readJson(new URL("../package.json", import.meta.url), {}).catch(() => ({}))).version || "";
+  const pipeline = createPipeline({ settingsStore, secrets, gateway, projectStore, llmLog, emit, fetchImpl, visionImage, appVersion });
   const batch = createBatchQueue({ dataDir, settingsStore, pipeline, emit });
 
   // 项目索引：工作区里由本软件管理的项目
@@ -258,6 +259,7 @@ export async function createCore({ dataDir, cipher, toPng, visionImage, fetchImp
       const softwareName = String(request.softwareName || "").trim();
       assertSafeSoftwareName(softwareName);
       const dir = path.join(request.workspaceDir || settings.workspaceDir, softwareName);
+      if (await projectStore.exists(dir)) throw new Error(`已经有「${softwareName}」这个项目了，可以在项目列表里找到它`);
       if (await exists(dir)) {
         const info = await inspectProject(dir).catch(() => null);
         if (info) throw new Error(`工作区里已经有「${softwareName}」这个项目，请用「导入历史项目」或换个名字`);

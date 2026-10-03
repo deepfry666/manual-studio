@@ -3,6 +3,7 @@ import path from "node:path";
 import fsp from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createCore } from "../core/index.mjs";
+import { convertToPngWithSips } from "../core/gateway/image-check.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const APP_NAME = "软件指南生成器";
@@ -24,10 +25,11 @@ const cipher = {
   },
 };
 
-async function toPng(buffer) {
+async function toPng(buffer, type) {
   const image = nativeImage.createFromBuffer(buffer);
-  if (image.isEmpty()) throw new Error("图片无法解码");
-  return image.toPNG();
+  if (!image.isEmpty()) return image.toPNG();
+  // nativeImage 读不了的格式（如 WebP）交给系统自带的 sips
+  return convertToPngWithSips(buffer, type);
 }
 
 async function visionImage(file) {

@@ -227,6 +227,11 @@ export function DeliveryTab({ data, running, onChanged }: { data: ProjectDetail;
           ) : (
             <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有交付包" />
           )}
+          <Typography.Paragraph className="muted" style={{ marginTop: 12, marginBottom: 0, fontSize: 12 }}>
+            溯源：每张截图的线路、模型、生成时间和验收方式记录在项目文件夹的{" "}
+            <a onClick={() => call("openPath", `${data.dir}/generation-record.json`)}>generation-record.json</a>
+            ，构建时汇总写进 project-manifest.json。
+          </Typography.Paragraph>
           {build && (
             <Descriptions size="small" column={1} style={{ marginTop: 16 }} bordered>
               <Descriptions.Item label="生成时间">{formatTime(build.at)}</Descriptions.Item>

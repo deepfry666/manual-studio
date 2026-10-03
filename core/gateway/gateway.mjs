@@ -109,9 +109,13 @@ export function createImageGateway({
 
   async function installFile(outputPath, png, archiveRoot) {
     if (await exists(outputPath)) {
-      const archiveDir = path.join(archiveRoot, `screens-${timestampSlug(new Date(now()))}`);
+      // 同一分钟内替换的截图归档到同一个文件夹；同名时加序号，不覆盖已归档的旧图
+      const archiveDir = path.join(archiveRoot, `screens-${timestampSlug(new Date(now())).slice(0, 16)}`);
       await fsp.mkdir(archiveDir, { recursive: true });
-      await fsp.copyFile(outputPath, path.join(archiveDir, path.basename(outputPath)));
+      const base = path.basename(outputPath, ".png");
+      let target = path.join(archiveDir, `${base}.png`);
+      for (let index = 2; await exists(target); index += 1) target = path.join(archiveDir, `${base}-${index}.png`);
+      await fsp.copyFile(outputPath, target);
     }
     await writeFileAtomic(outputPath, png);
   }

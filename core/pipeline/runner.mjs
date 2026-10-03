@@ -15,6 +15,7 @@ import {
 import { buildBundle } from "../build/build.mjs";
 import { readJson, writeJsonAtomic, writeFileAtomic, sha256, sha256File, hashObject, exists, timestampSlug } from "../util/fsx.mjs";
 import { imageToVisionDataUrl } from "../util/vision-image.mjs";
+import { updateRecord, readRecord } from "./provenance.mjs";
 
 export const STEP_LABELS = {
   plan: "规划界面",
@@ -58,7 +59,7 @@ async function mapLimit(items, limit, worker) {
   return results;
 }
 
-export function createPipeline({ settingsStore, secrets, gateway, projectStore, llmLog, emit = () => {}, fetchImpl = fetch, visionImage = imageToVisionDataUrl }) {
+export function createPipeline({ settingsStore, secrets, gateway, projectStore, llmLog, emit = () => {}, fetchImpl = fetch, visionImage = imageToVisionDataUrl, appVersion = "" }) {
   const running = new Map();
 
   async function resolveLlm(step) {
@@ -79,6 +80,11 @@ export function createPipeline({ settingsStore, secrets, gateway, projectStore, 
     try {
       const result = await chatJson({ ...params, vendor: llm.vendor, apiKey: llm.apiKey, model: llm.model, fetchImpl });
       await llmLog?.append({ step, projectDir, vendorId: llm.vendor.id, model: llm.model, ok: true, durationMs: Date.now() - started });
+      const at = new Date().toISOString();
+      await updateRecord(projectDir, (record) => {
+        record.llm[step] = { vendor: llm.vendor.name, baseUrl: llm.vendor.baseUrl, model: llm.model, at };
+        record.history.push({ at, event: "llm", step, vendor: llm.vendor.name, model: llm.model });
+      });
       return result;
     } catch (error) {
       await llmLog?.append({ step, projectDir, vendorId: llm.vendor.id, model: llm.model, ok: false, durationMs: Date.now() - started, errorMessage: String(error.message).slice(0, 300) });
@@ -175,18 +181,28 @@ export function createPipeline({ settingsStore, secrets, gateway, projectStore, 
       const rowHash = planRowHash(screen, ui, platform, settings.image.targetSize);
       const previous = state.screens[screen.id] || {};
       const file = paths.promptFile(screen.id);
+      const name = state.request.softwareName;
+      const keep = previous.promptEdited && previous.planRowHash === rowHash && (await exists(file));
       let prompt;
-      if (previous.promptEdited && previous.planRowHash === rowHash && (await exists(file))) {
-        prompt = ensureBrandBan(await fsp.readFile(file, "utf8"));
+      let promptHash;
+      if (keep) {
+        // 人工改过或历史项目的提示词：原样保留，只把旧软件名换成新名字。
+        // 内容没变时沿用原来的哈希，不会因此重新生图。
+        const current = await fsp.readFile(file, "utf8");
+        const oldName = state.promptsName;
+        prompt = oldName && oldName !== name ? current.split(oldName).join(name) : current;
+        promptHash = prompt === current && previous.promptHash ? previous.promptHash : promptIdentity(prompt, name);
       } else {
-        prompt = composeScreenPrompt({ softwareName: state.request.softwareName, platform, targetSize: settings.image.targetSize, ui, screen });
+        prompt = composeScreenPrompt({ softwareName: name, platform, targetSize: settings.image.targetSize, ui, screen });
+        promptHash = promptIdentity(prompt, name);
       }
-      await writeFileAtomic(file, prompt);
-      screenStates[screen.id] = { planRowHash: rowHash, promptHash: promptIdentity(prompt, state.request.softwareName), promptEdited: previous.promptEdited && previous.planRowHash === rowHash };
+      if (!(await exists(file)) || (await fsp.readFile(file, "utf8")) !== prompt) await writeFileAtomic(file, prompt);
+      screenStates[screen.id] = { planRowHash: rowHash, promptHash, promptEdited: keep };
     }
     await update(projectDir, (draft) => {
       for (const [id, patch] of Object.entries(screenStates)) draft.screens[id] = { ...(draft.screens[id] || {}), ...patch };
       for (const id of Object.keys(draft.screens)) if (!screenStates[id]) delete draft.screens[id];
+      draft.promptsName = draft.request.softwareName;
     });
     return { status: "done" };
   }
@@ -229,6 +245,12 @@ export function createPipeline({ settingsStore, secrets, gateway, projectStore, 
         contentStale: true,
       };
       appendLog(draft, `${id} 已生成（${result.providerName || result.providerId}${result.hedged ? "，触发了超时补发" : ""}，${Math.round((result.durationMs || 0) / 1000)} 秒）`);
+    });
+    const generatedAt = new Date().toISOString();
+    await updateRecord(projectDir, (record) => {
+      const entry = { source: "generated", providerId: result.providerId, providerName: result.providerName, model: result.model, requestSize: result.requestSize, width: result.width, height: result.height, hedged: Boolean(result.hedged), attempts: result.attempts, resumed: Boolean(result.resumed), generatedAt, imageSha256: imageSha, promptSha256: sha256(Buffer.from(prompt)), reason: reason || null };
+      record.screens[id] = entry;
+      record.history.push({ at: generatedAt, event: "screen-generated", screenId: id, ...entry });
     });
     emit({ type: "screen", projectDir, screenId: id, status: "generated" });
     return result;
@@ -306,6 +328,10 @@ export function createPipeline({ settingsStore, secrets, gateway, projectStore, 
       await update(projectDir, (draft) => {
         draft.screens[screen.id] = { ...(draft.screens[screen.id] || {}), gate };
         appendLog(draft, verdict.passed ? `${screen.id} 验收通过` : `${screen.id} 验收不通过：${verdict.reasons.join("；")}`, verdict.passed ? "info" : "warn");
+      });
+      await updateRecord(projectDir, (record) => {
+        record.gate[screen.id] = { status: gate.status, method: "vision", imageSha256: sha, reasons: gate.reasons, checkedAt: gate.checkedAt };
+        record.history.push({ at: gate.checkedAt, event: "gate", screenId: screen.id, status: gate.status, method: "vision", reasons: gate.reasons });
       });
       if (verdict.passed) return gate;
       if (round >= limit - 1) return gate;
@@ -513,8 +539,30 @@ export function createPipeline({ settingsStore, secrets, gateway, projectStore, 
     content.screens = content.screens.map((screen, index) => ({ ...screen, image: `screens/${screenId(index)}.png` }));
     const txtFields = { ...settings.txtFields, ...(state.request.txtFields || {}) };
     if (state.request.txtFields?.language) txtFields.languageOverride = true;
+    const record = await readRecord(projectDir);
+    const provenance = {
+      builtBy: `软件指南生成器${appVersion ? ` ${appVersion}` : ""}`,
+      recordFile: record ? "generation-record.json" : null,
+      screens: Object.fromEntries(
+        content.screens.map((_, index) => {
+          const id = screenId(index);
+          const entry = record?.screens?.[id];
+          const gate = state.screens[id]?.gate || {};
+          return [id, {
+            source: entry?.source || (state.origin === "imported" ? "imported-from-skill" : "unknown"),
+            provider: entry?.providerName || entry?.providerId || null,
+            model: entry?.model || null,
+            generatedAt: entry?.generatedAt || null,
+            hedged: entry?.hedged || false,
+            gate: gate.method || null,
+          }];
+        })
+      ),
+      llm: record?.llm || {},
+    };
     const result = await buildBundle({
       projectDir,
+      provenance,
       softwareName: state.request.softwareName,
       content,
       codeSource: state.request.codeSource,
@@ -531,6 +579,9 @@ export function createPipeline({ settingsStore, secrets, gateway, projectStore, 
       for (const warning of result.warnings) draft.warnings.push(`构建：${warning}`);
       if (!result.withCode) draft.warnings.push("构建：没有指定代码来源，本次没有生成代码文档");
       appendLog(draft, `交付包已生成：${result.files.join("、")}`);
+    });
+    await updateRecord(projectDir, (record) => {
+      record.history.push({ at: new Date().toISOString(), event: "build", files: result.files, withPdf: result.withPdf, withCode: result.withCode, codeLines: result.code?.lineCount || null, codeSource: state.request.codeSource?.path || null });
     });
     return { status: "done" };
   }
@@ -671,8 +722,11 @@ export function createPipeline({ settingsStore, secrets, gateway, projectStore, 
     async savePlanScreen(projectDir, id, patch) {
       const paths = projectPaths(projectDir);
       const plan = await readJson(paths.screenPlan, null);
-      const screen = plan?.screens?.find((item) => item.id === id);
-      if (!screen) throw new Error("没有这一屏");
+      // 兼容历史格式：数组 / { screens } / { flow }，行里用 id 或 screenId
+      const rows = Array.isArray(plan) ? plan : plan?.screens || plan?.flow;
+      const index = Number(String(id).replace("screen-", "")) - 1;
+      const screen = Array.isArray(rows) ? rows.find((item) => item && (item.id === id || item.screenId === id)) || (rows[index] && typeof rows[index] === "object" ? rows[index] : null) : null;
+      if (!screen) throw new Error("规划文件里找不到这一屏，可以直接编辑这一屏的提示词");
       const allowed = ["title", "pageType", "activeTab", "mustShow", "sampleData", "visualBrief", "textContract"];
       for (const key of allowed) if (patch[key] !== undefined) screen[key] = patch[key];
       await writeJsonAtomic(paths.screenPlan, plan);
@@ -707,12 +761,23 @@ export function createPipeline({ settingsStore, secrets, gateway, projectStore, 
         state.screens[id] = { ...current, imageSha: sha, imagePromptHash: current.promptHash, gate: null, generatedAt: new Date().toISOString(), fromAlternate: true, contentStale: true };
         appendLog(state, `${id} 已换成备选图`);
       });
+      await updateRecord(projectDir, (record) => {
+        const at = new Date().toISOString();
+        const providerId = path.basename(file, ".png").split("-").slice(6).join("-") || null;
+        record.screens[id] = { source: "alternate", providerId, alternateFile: path.basename(file), imageSha256: sha, generatedAt: at };
+        record.history.push({ at, event: "alternate-used", screenId: id, providerId, alternateFile: path.basename(file) });
+      });
       await markDirty(projectDir, ["gate", "content", "receipt", "build"]);
     },
     async manualGate(projectDir, id, passed) {
       const paths = projectPaths(projectDir);
       const state = await projectStore.read(projectDir);
       const sha = await sha256File(paths.screenFile(id));
+      await updateRecord(projectDir, (record) => {
+        const at = new Date().toISOString();
+        record.gate[id] = { status: passed ? "manual-passed" : "failed", method: "manual", imageSha256: sha, checkedAt: at };
+        record.history.push({ at, event: "gate", screenId: id, status: passed ? "manual-passed" : "failed", method: "manual" });
+      });
       const tokensHash = hashObject(forbiddenBrandTokens(state.request.softwareName, state.request.extraBrandTokens));
       await update(projectDir, (draft) => {
         const previous = draft.screens[id]?.gate || {};
@@ -763,6 +828,7 @@ export function createPipeline({ settingsStore, secrets, gateway, projectStore, 
       const before = state.request;
       const next = { ...before, ...patch };
       const dirty = new Set();
+      const changed = (key) => patch[key] !== undefined && JSON.stringify(patch[key]) !== JSON.stringify(before[key] ?? null);
       if (patch.softwareName !== undefined && patch.softwareName !== before.softwareName) {
         const paths = projectPaths(projectDir);
         const oldBundle = paths.bundle(before.softwareName);
@@ -772,10 +838,10 @@ export function createPipeline({ settingsStore, secrets, gateway, projectStore, 
         }
         ["prompts", "gate", "receipt", "build"].forEach((step) => dirty.add(step));
       }
-      if (["screenCount", "emphasis", "notes", "platform"].some((key) => patch[key] !== undefined && patch[key] !== before[key])) ["plan", "prompts", "images", "gate", "content", "receipt", "build"].forEach((step) => dirty.add(step));
-      if (patch.wantDesign !== undefined && patch.wantDesign !== before.wantDesign) ["design", "receipt", "build"].forEach((step) => dirty.add(step));
-      if (["codeSource", "txtFields", "compileDate", "versionPolicy", "applicableVersion", "allowDropCodeDoc"].some((key) => patch[key] !== undefined)) dirty.add("build");
-      if (patch.extraBrandTokens !== undefined) ["gate", "receipt", "build"].forEach((step) => dirty.add(step));
+      if (["screenCount", "emphasis", "notes", "platform"].some((key) => changed(key) && (patch[key] || null) !== (before[key] || null))) ["plan", "prompts", "images", "gate", "content", "receipt", "build"].forEach((step) => dirty.add(step));
+      if (changed("wantDesign") && Boolean(patch.wantDesign) !== Boolean(before.wantDesign)) ["design", "receipt", "build"].forEach((step) => dirty.add(step));
+      if (["codeSource", "txtFields", "compileDate", "versionPolicy", "applicableVersion", "allowDropCodeDoc"].some(changed)) dirty.add("build");
+      if (changed("extraBrandTokens")) ["gate", "receipt", "build"].forEach((step) => dirty.add(step));
       await update(projectDir, (draft) => {
         draft.request = next;
         appendLog(draft, "项目设置已更新");
@@ -806,6 +872,7 @@ export function createPipeline({ settingsStore, secrets, gateway, projectStore, 
       }
       await update(projectDir, (draft) => {
         for (const [id, patch] of Object.entries(patches)) draft.screens[id] = { ...(draft.screens[id] || {}), ...patch };
+        draft.promptsName = draft.request.softwareName;
       });
     }
     state = await projectStore.read(projectDir);
