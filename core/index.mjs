@@ -56,7 +56,7 @@ export async function createCore({ dataDir, cipher, toPng, visionImage, fetchImp
     callLog,
     fetchImpl,
     toPng,
-    onEvent: (event) => emit({ type: "image", ...event }),
+    onEvent: (event) => emit({ ...event, kind: event.type, type: "image" }),
   });
   const pipeline = createPipeline({ settingsStore, secrets, gateway, projectStore, llmLog, emit, fetchImpl, visionImage });
   const batch = createBatchQueue({ dataDir, settingsStore, pipeline, emit });

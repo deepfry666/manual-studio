@@ -134,7 +134,8 @@ export async function createImportedState(dir, info) {
       if (info.hasBundle) state.steps.build = { status: "done", finishedAt: state.imported.importedAt, message: "沿用历史交付包" };
     }
   }
-  state.status = info.grade === "ready" && info.hasBundle ? "done" : "idle";
+  const allDone = Object.values(state.steps).every((step) => step.status === "done" || step.status === "skipped");
+  state.status = allDone ? "done" : "idle";
   return state;
 }
 

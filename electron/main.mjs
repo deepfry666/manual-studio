@@ -1,0 +1,227 @@
+import { app, BrowserWindow, ipcMain, dialog, shell, safeStorage, nativeImage, protocol, net, Notification } from "electron";
+import path from "node:path";
+import fsp from "node:fs/promises";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { createCore } from "../core/index.mjs";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const APP_NAME = "软件指南生成器";
+app.setName(APP_NAME);
+
+protocol.registerSchemesAsPrivileged([{ scheme: "asset", privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }]);
+
+let mainWindow = null;
+let core = null;
+
+/** 密钥用 safeStorage 加密（macOS 上由系统钥匙串保护）。 */
+const cipher = {
+  encrypt(value) {
+    if (!safeStorage.isEncryptionAvailable()) throw new Error("系统加密不可用，无法安全保存密钥");
+    return safeStorage.encryptString(value).toString("base64");
+  },
+  decrypt(value) {
+    return safeStorage.decryptString(Buffer.from(value, "base64"));
+  },
+};
+
+async function toPng(buffer) {
+  const image = nativeImage.createFromBuffer(buffer);
+  if (image.isEmpty()) throw new Error("图片无法解码");
+  return image.toPNG();
+}
+
+async function visionImage(file) {
+  const image = nativeImage.createFromPath(file);
+  if (image.isEmpty()) throw new Error("截图无法读取");
+  const resized = image.getSize().width > 720 ? image.resize({ width: 720, quality: "good" }) : image;
+  return `data:image/jpeg;base64,${resized.toJPEG(80).toString("base64")}`;
+}
+
+function send(event) {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("studio:event", event);
+  if (event.type === "batch" && !mainWindow?.isFocused() && Notification.isSupported()) {
+    const items = event.items || [];
+    const unfinished = items.filter((item) => ["queued", "running"].includes(item.status)).length;
+    if (items.length && unfinished === 0 && !send.notified) {
+      send.notified = true;
+      new Notification({ title: APP_NAME, body: "批量队列已全部跑完" }).show();
+    }
+    if (unfinished) send.notified = false;
+  }
+}
+
+const ACTIONS = ["confirmPlan", "savePlanScreen", "savePrompt", "regenerateScreen", "useAlternate", "manualGate", "saveContent", "rewriteContent", "updateRequest"];
+const BACKGROUND_ACTIONS = new Set(["confirmPlan", "regenerateScreen", "rewriteContent"]);
+
+function methods() {
+  return {
+    getSettings: () => core.getSettings(),
+    updateSettings: (patch) => core.updateSettings(patch),
+    libreOfficeStatus: () => core.libreOfficeStatus(),
+    saveProvider: (input) => core.saveProvider(input),
+    deleteProvider: (id) => core.deleteProvider(id),
+    reorderProviders: (ids) => core.reorderProviders(ids),
+    providerStatuses: () => core.providerStatuses(),
+    probeProvider: (id, options) => core.probeProvider(id, options),
+    resetProviderHealth: (id) => core.resetProviderHealth(id),
+    importLegacyProviders: () => core.importLegacyProviders(),
+    saveVendor: (input) => core.saveVendor(input),
+    deleteVendor: (id) => core.deleteVendor(id),
+    fetchVendorModels: (id) => core.fetchVendorModels(id),
+    testVendor: (id, model, options) => core.testVendor(id, model, options),
+    setAssignment: (step, value) => core.setAssignment(step, value),
+    listProjects: () => core.listProjects(),
+    getProject: (dir) => core.getProject(dir),
+    createProject: (request) => core.createProject(request),
+    createProjectsFromCsv: (text, defaults) => core.createProjectsFromCsv(text, defaults),
+    removeFromList: (dir) => core.removeFromList(dir),
+    scanWorkspace: (dir) => core.scanWorkspace(dir),
+    importProjects: (dirs) => core.importProjects(dirs),
+    renameSoftware: (dir, name) => core.renameSoftware(dir, name),
+    run: (dir, options) => {
+      core.run(dir, options).catch((error) => send({ type: "log", projectDir: dir, level: "error", message: error.message }));
+      return true;
+    },
+    cancel: (dir) => core.cancel(dir),
+    action: async (name, ...args) => {
+      if (!ACTIONS.includes(name)) throw new Error(`未知操作：${name}`);
+      const result = core.actions[name](...args);
+      if (BACKGROUND_ACTIONS.has(name)) {
+        result.catch((error) => send({ type: "log", projectDir: args[0], level: "error", message: error.message }));
+        return true;
+      }
+      return result;
+    },
+    inspectCodeSource: (source) => core.inspectCodeSource(source),
+    zipBundle: (dir) => core.zipBundle(dir),
+    batchList: () => core.batch.list(),
+    batchEnqueue: (dirs, options) => core.batch.enqueue(dirs, options),
+    batchPause: () => core.batch.pause(),
+    batchResume: () => core.batch.resume(),
+    batchRetry: (id) => core.batch.retry(id),
+    batchRemove: (id) => core.batch.remove(id),
+    batchClearFinished: () => core.batch.clearFinished(),
+    queryCalls: (filter) => core.queryCalls(filter),
+    queryLlmCalls: (filter) => core.queryLlmCalls(filter),
+    pendingJobs: () => core.pendingJobs(),
+    dismissJob: (id) => core.dismissJob(id),
+    chooseDirectory: async (title, defaultPath) => {
+      const result = await dialog.showOpenDialog(mainWindow, { title, defaultPath, properties: ["openDirectory", "createDirectory"] });
+      return result.canceled ? null : result.filePaths[0];
+    },
+    choosePath: async (title, defaultPath) => {
+      const result = await dialog.showOpenDialog(mainWindow, { title, defaultPath, properties: ["openDirectory", "openFile"] });
+      return result.canceled ? null : result.filePaths[0];
+    },
+    chooseTextFile: async (title) => {
+      const result = await dialog.showOpenDialog(mainWindow, { title, properties: ["openFile"], filters: [{ name: "表格文本", extensions: ["csv", "txt", "tsv"] }] });
+      if (result.canceled) return null;
+      return fsp.readFile(result.filePaths[0], "utf8");
+    },
+    openPath: (target) => shell.openPath(target),
+    showInFolder: (target) => shell.showItemInFolder(target),
+    appInfo: () => ({ version: app.getVersion(), dataDir: process.env.MS_DATA_DIR || app.getPath("userData"), platform: process.platform }),
+  };
+}
+
+function createWindow() {
+  mainWindow = new BrowserWindow({
+    width: 1440,
+    height: 920,
+    minWidth: 1120,
+    minHeight: 720,
+    title: APP_NAME,
+    titleBarStyle: "hiddenInset",
+    backgroundColor: "#f5f6f8",
+    show: false,
+    webPreferences: {
+      preload: path.join(here, "preload.cjs"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  mainWindow.once("ready-to-show", () => mainWindow.show());
+  if (process.env.VITE_DEV_SERVER_URL) mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
+  else mainWindow.loadFile(path.join(here, "..", "web", "dist", "index.html"));
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:/.test(url)) shell.openExternal(url);
+    return { action: "deny" };
+  });
+  mainWindow.on("close", (event) => {
+    const running = core?.internals.pipeline.runningProjects() || [];
+    if (!running.length || mainWindow.forceClose) return;
+    event.preventDefault();
+    const choice = dialog.showMessageBoxSync(mainWindow, {
+      type: "warning",
+      buttons: ["退出", "取消"],
+      defaultId: 1,
+      message: `还有 ${running.length} 个项目在运行`,
+      detail: "退出后，已经提交的异步生图任务会在下次打开时继续查询，不会重复提交；同步请求会被中断。",
+    });
+    if (choice === 0) {
+      mainWindow.forceClose = true;
+      mainWindow.close();
+    }
+  });
+}
+
+/** 开发自检：MS_SCREENSHOT_DIR 设置时，依次截取各页面后退出。 */
+async function captureScreens(dir) {
+  const routes = (process.env.MS_SCREENSHOT_ROUTES || "projects,providers,llm,batch,calls,settings").split(",");
+  await fsp.mkdir(dir, { recursive: true });
+  await new Promise((resolve) => setTimeout(resolve, 2500));
+  try {
+    for (const [index, route] of routes.entries()) {
+      await mainWindow.webContents.executeJavaScript(`location.hash = ${JSON.stringify(`#/${route}`)}`);
+      await new Promise((resolve) => setTimeout(resolve, 1800));
+      const image = await mainWindow.webContents.capturePage();
+      await fsp.writeFile(path.join(dir, `${String(index + 1).padStart(2, "0")}-${route.split("/")[0]}.png`), image.toPNG());
+    }
+  } finally {
+    mainWindow.forceClose = true;
+    app.quit();
+  }
+}
+
+app.whenReady().then(async () => {
+  const dataDir = process.env.MS_DATA_DIR || app.getPath("userData");
+  // MS_TEST_MEMORY_SECRETS 仅用于开发自检：密钥只放内存，不碰系统钥匙串
+  core = await createCore({ dataDir, cipher: process.env.MS_TEST_MEMORY_SECRETS ? undefined : cipher, toPng, visionImage, onEvent: send });
+  protocol.handle("asset", (request) => {
+    const url = new URL(request.url);
+    const target = decodeURIComponent(url.pathname.replace(/^\//, ""));
+    if (!path.isAbsolute(target) || !/\.(png|jpe?g|webp|pdf)$/i.test(target)) return new Response("forbidden", { status: 403 });
+    return net.fetch(pathToFileURL(target).toString());
+  });
+  const table = methods();
+  ipcMain.handle("studio:call", async (_event, method, args) => {
+    const handler = table[method];
+    if (!handler) throw new Error(`未知方法：${method}`);
+    return handler(...(Array.isArray(args) ? args : []));
+  });
+  createWindow();
+  core.start().catch((error) => send({ type: "log", level: "error", message: `启动恢复失败：${error.message}` }));
+  if (process.env.MS_SCREENSHOT_DIR) mainWindow.webContents.once("did-finish-load", () => captureScreens(process.env.MS_SCREENSHOT_DIR));
+  if (process.env.MS_AUTOMATION) {
+    // 开发自检脚本：在主进程里驱动 core 并截图
+    mainWindow.webContents.once("did-finish-load", async () => {
+      try {
+        const automation = await import(pathToFileURL(process.env.MS_AUTOMATION).toString());
+        await automation.default({ app, mainWindow, core });
+      } catch (error) {
+        console.error("automation failed:", error);
+      } finally {
+        mainWindow.forceClose = true;
+        app.quit();
+      }
+    });
+  }
+  app.on("activate", () => {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  });
+});
+
+app.on("window-all-closed", () => {
+  app.quit();
+});
