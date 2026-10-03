@@ -1,0 +1,191 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import fsp from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import JSZip from "jszip";
+import { createCore } from "../core/index.mjs";
+import { startMockRelay } from "./helpers/mock-relay.mjs";
+import { startMockLlm } from "./helpers/mock-llm.mjs";
+import { findLibreOffice } from "../core/build/runtime.mjs";
+
+async function setupCore({ gateBrandOnce = [] } = {}) {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), "pipeline-test-"));
+  const dataDir = path.join(root, "data");
+  const workspace = path.join(root, "workspace");
+  await fsp.mkdir(workspace, { recursive: true });
+  const relay = await startMockRelay(() => ({ delayMs: 80 }));
+  const llm = await startMockLlm({ gateBrandOnce });
+  const core = await createCore({ dataDir });
+  await core.updateSettings({ workspaceDir: workspace, pipeline: { reviewPlanSingle: false } });
+  await core.saveProvider({ id: "cpa", preset: "openai-sync", name: "CPA", baseUrl: relay.baseUrl, model: "gpt-image-2.5", apiKey: "sk-image-test" });
+  const vendorId = await core.saveVendor({ name: "测试厂商", preset: "custom", baseUrl: llm.baseUrl, apiKey: "sk-llm-test" });
+  for (const step of ["plan", "content", "design"]) await core.setAssignment(step, { vendorId, model: "mock-text" });
+  await core.setAssignment("gate", { vendorId, model: "mock-vision" });
+  return { root, dataDir, workspace, relay, llm, core, close: () => Promise.all([relay.close(), llm.close()]) };
+}
+
+async function writeJavaSource(dir) {
+  await fsp.mkdir(path.join(dir, "src", "app"), { recursive: true });
+  await fsp.writeFile(path.join(dir, "src", "app", "B.java"), "package app;\n\npublic class B {\n  int b() { return 2; }\n}\n");
+  await fsp.writeFile(path.join(dir, "src", "app", "A.java"), "package app;\npublic class A {\n  int a() { return 1; }\n}");
+  await fsp.writeFile(path.join(dir, "README.md"), "not code");
+}
+
+test("端到端：新建项目一路跑到交付包（含代码来源、设计说明、PDF）", { timeout: 180_000 }, async (t) => {
+  const ctx = await setupCore();
+  t.after(ctx.close);
+  const codeDir = path.join(ctx.root, "code");
+  await writeJavaSource(codeDir);
+  const dir = await ctx.core.createProject({ softwareName: "测试记账本 V1.0", screenCount: 3, emphasis: "预算提醒", wantDesign: true, codeSource: { path: codeDir, extensions: [".java"] } });
+  const result = await ctx.core.run(dir);
+  const project = await ctx.core.getProject(dir);
+  assert.equal(result.status, "done", JSON.stringify({ result, error: project.state.lastError, log: project.state.log.slice(-5) }));
+
+  // 截图并发生成，提示词末尾有品牌禁令
+  assert.equal(ctx.relay.submits().length, 3);
+  const prompt = fs.readFileSync(path.join(dir, "prompts", "screen-01.md"), "utf8");
+  assert.match(prompt, /Do NOT render the software name/);
+  assert.match(prompt, /Project context exact software name: 测试记账本 V1\.0/);
+
+  // 看图验收带了图片
+  assert.ok(ctx.llm.calls.filter((call) => call.step === "gate").every((call) => call.hasImage));
+
+  // 交付包
+  const withPdf = Boolean(await findLibreOffice());
+  const bundle = path.join(dir, "测试记账本 V1.0");
+  const expected = ["测试记账本 V1.0指南.docx", "测试记账本 V1.0指南.txt", "测试记账本 V1.0指南_代码-（JAVA）.docx"];
+  if (withPdf) expected.push("测试记账本 V1.0指南.pdf", "测试记账本 V1.0指南_代码-（JAVA）.pdf");
+  assert.deepEqual(fs.readdirSync(bundle).sort(), expected.sort());
+
+  // TXT：环境字段与旧模板一致，源程序量是代码来源的真实行数（A.java 4 行 + B.java 5 行）
+  const txt = fs.readFileSync(path.join(bundle, "测试记账本 V1.0指南.txt"), "utf8");
+  assert.match(txt, /^【开发的硬件环境】CPU类型：Intel英特尔酷睿i5-4590\r\n/);
+  assert.match(txt, /【源程序量】9行\r\n/);
+  assert.match(txt, /【编程语言】JAVA/);
+
+  // 代码文档只来自代码来源（A 在 B 前，不含 README）
+  const codeZip = await JSZip.loadAsync(fs.readFileSync(path.join(bundle, "测试记账本 V1.0指南_代码-（JAVA）.docx")));
+  const codeXml = await codeZip.file("word/document.xml").async("string");
+  assert.ok(codeXml.indexOf("public class A") < codeXml.indexOf("public class B"));
+  assert.doesNotMatch(codeXml, /not code|CensusController|getPipeNetworkStatistics/);
+
+  // 指南 Word：截图行不跨页（cantSplit），有设计说明
+  const guideZip = await JSZip.loadAsync(fs.readFileSync(path.join(bundle, "测试记账本 V1.0指南.docx")));
+  const guideXml = await guideZip.file("word/document.xml").async("string");
+  assert.equal((guideXml.match(/<w:cantSplit\/>/g) || []).length, 3);
+  assert.match(guideXml, /软件基本处理流程/);
+
+  // 回执和 manifest
+  const content = JSON.parse(fs.readFileSync(path.join(dir, "content.json"), "utf8"));
+  assert.equal(content.screenshotReview.reviewedScreens.length, 3);
+  assert.equal(content.imageRoute, "image-gateway");
+  const manifest = JSON.parse(fs.readFileSync(path.join(dir, "project-manifest.json"), "utf8"));
+  assert.equal(manifest.codeDocument, "from-code-source");
+  assert.equal(manifest.codeSource.lineCount, 9);
+
+  // 项目文件夹里没有本软件的隐藏状态文件
+  assert.equal(fs.existsSync(path.join(dir, ".studio")), false);
+
+  // 再跑一次：什么都不变，不重新生图、不重新调大模型
+  const llmCallsBefore = ctx.llm.calls.length;
+  const second = await ctx.core.run(dir);
+  assert.equal(second.status, "done");
+  assert.equal(ctx.relay.submits().length, 3);
+  assert.equal(ctx.llm.calls.length, llmCallsBefore);
+});
+
+test("没有代码来源时只出指南，不生成代码文档", { timeout: 120_000 }, async (t) => {
+  const ctx = await setupCore();
+  t.after(ctx.close);
+  const dir = await ctx.core.createProject({ softwareName: "无代码测试 V1.0", screenCount: 2 });
+  const result = await ctx.core.run(dir);
+  assert.equal(result.status, "done");
+  const files = fs.readdirSync(path.join(dir, "无代码测试 V1.0"));
+  assert.ok(files.every((name) => !name.includes("_代码-（JAVA）")), files.join(","));
+  const txt = fs.readFileSync(path.join(dir, "无代码测试 V1.0", "无代码测试 V1.0指南.txt"), "utf8");
+  assert.match(txt, /【源程序量】\r\n/);
+  const project = await ctx.core.getProject(dir);
+  assert.ok(project.state.warnings.some((warning) => warning.includes("没有指定代码来源")));
+});
+
+test("截图里出现软件名：验收不通过，自动重生后通过", { timeout: 120_000 }, async (t) => {
+  const ctx = await setupCore({ gateBrandOnce: ["新增账单"] });
+  t.after(ctx.close);
+  const dir = await ctx.core.createProject({ softwareName: "测试记账本 V1.0", screenCount: 3 });
+  const result = await ctx.core.run(dir, { until: "gate" });
+  assert.notEqual(result.status, "failed");
+  assert.equal(ctx.relay.submits().length, 4, "第 3 屏重生了一次");
+  const project = await ctx.core.getProject(dir);
+  assert.equal(project.state.screens["screen-03"].gate.status, "passed");
+});
+
+test("改文案后只重建交付包；单屏重生只重生这一屏", { timeout: 180_000 }, async (t) => {
+  const ctx = await setupCore();
+  t.after(ctx.close);
+  const dir = await ctx.core.createProject({ softwareName: "编辑测试 V1.0", screenCount: 3 });
+  assert.equal((await ctx.core.run(dir)).status, "done");
+  const submits = ctx.relay.submits().length;
+  const edited = "这是人工修改后的说明文字。".repeat(30);
+  await ctx.core.actions.saveContent(dir, { screens: [{ id: "screen-02", text: edited }] });
+  assert.equal((await ctx.core.run(dir)).status, "done");
+  assert.equal(ctx.relay.submits().length, submits, "改文案不重新生图");
+  const content = JSON.parse(fs.readFileSync(path.join(dir, "content.json"), "utf8"));
+  assert.equal(content.screens[1].text, edited);
+
+  await ctx.core.actions.regenerateScreen(dir, "screen-01");
+  assert.equal(ctx.relay.submits().length, submits + 1);
+  const project = await ctx.core.getProject(dir);
+  assert.equal(project.state.status, "done");
+  const after = JSON.parse(fs.readFileSync(path.join(dir, "content.json"), "utf8"));
+  assert.equal(after.screens[1].text, edited, "人工改过的文案不被覆盖");
+  assert.ok(fs.readdirSync(path.join(dir, "archive")).some((name) => name.startsWith("screens-")), "旧截图已归档");
+});
+
+test("改软件名：不重新规划、不重新生图，重新验收后重建，文件夹一起改名", { timeout: 180_000 }, async (t) => {
+  const ctx = await setupCore();
+  t.after(ctx.close);
+  const dir = await ctx.core.createProject({ softwareName: "旧名字 V1.0", screenCount: 2 });
+  assert.equal((await ctx.core.run(dir)).status, "done");
+  const submits = ctx.relay.submits().length;
+  const planCalls = ctx.llm.calls.filter((call) => call.step === "plan").length;
+  const newDir = await ctx.core.renameSoftware(dir, "新名字 V2.0");
+  assert.equal(path.basename(newDir), "新名字 V2.0");
+  assert.equal((await ctx.core.run(newDir)).status, "done");
+  assert.equal(ctx.relay.submits().length, submits);
+  assert.equal(ctx.llm.calls.filter((call) => call.step === "plan").length, planCalls);
+  assert.ok(fs.existsSync(path.join(newDir, "新名字 V2.0", "新名字 V2.0指南.docx")));
+  assert.ok(!fs.existsSync(path.join(newDir, "旧名字 V1.0")), "旧名字的交付包已归档");
+});
+
+test("导入历史项目：沿用截图和回执，重建时不重新生图", { timeout: 180_000 }, async (t) => {
+  const source = path.join(os.homedir(), "Desktop", "软件指南生成", "心云购电商广告运营平台 V1.0");
+  if (!fs.existsSync(source)) {
+    t.skip("本机没有这个历史项目");
+    return;
+  }
+  const ctx = await setupCore();
+  t.after(ctx.close);
+  const copy = path.join(ctx.workspace, "心云购电商广告运营平台 V1.0");
+  await fsp.cp(source, copy, { recursive: true });
+  const before = fs.readdirSync(copy).sort();
+  const scan = await ctx.core.scanWorkspace(ctx.workspace);
+  assert.equal(scan.length, 1);
+  assert.equal(scan[0].grade, "ready");
+  const imported = await ctx.core.importProjects([copy]);
+  assert.deepEqual(imported.imported, [copy]);
+  assert.deepEqual(fs.readdirSync(copy).sort(), before, "导入不往项目里写文件");
+  const project = await ctx.core.getProject(copy);
+  assert.ok(project.state.warnings.some((warning) => warning.includes("固定正文")));
+  // 重建（没有代码来源 → 只出指南）
+  await ctx.core.actions.updateRequest(copy, { compileDate: "2026年10月3日" });
+  const result = await ctx.core.run(copy);
+  const after = await ctx.core.getProject(copy);
+  assert.equal(result.status, "done", after.state.lastError || "");
+  assert.equal(ctx.relay.submits().length, 0, "不重新生图");
+  assert.equal(ctx.llm.calls.length, 0, "不调用大模型");
+  const bundle = fs.readdirSync(path.join(copy, "心云购电商广告运营平台 V1.0"));
+  assert.ok(bundle.every((name) => !name.includes("_代码-（JAVA）")));
+  assert.ok(fs.readdirSync(path.join(copy, "archive")).some((name) => name.includes("-交付-")), "旧交付包已归档");
+});

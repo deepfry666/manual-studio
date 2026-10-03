@@ -15,12 +15,12 @@ export const DEFAULT_TXT_FIELDS = {
 
 export const PIPELINE_STEPS = ["plan", "prompts", "images", "gate", "content", "design", "receipt", "build"];
 
+/** gate 用看图模型一次完成两件事：品牌验收 + 抄录界面实际内容（供文案对账）。 */
 export const LLM_STEPS = {
-  plan: { label: "规划", needsVision: false },
-  content: { label: "文案起草", needsVision: false },
-  design: { label: "设计说明", needsVision: false },
-  gate: { label: "截图品牌验收", needsVision: true },
-  reconcile: { label: "截图文案对账", needsVision: true },
+  plan: { label: "规划界面", needsVision: false },
+  gate: { label: "截图验收与内容抄录", needsVision: true },
+  content: { label: "撰写说明文字", needsVision: false },
+  design: { label: "设计说明（可选）", needsVision: false },
 };
 
 export function defaultSettings() {
@@ -45,7 +45,7 @@ export function defaultSettings() {
     providers: [],
     llm: {
       vendors: [],
-      assignments: { plan: null, content: null, design: null, gate: null, reconcile: null },
+      assignments: { plan: null, gate: null, content: null, design: null },
     },
     pipeline: {
       defaultScreenCount: 7,
