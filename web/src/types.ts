@@ -36,6 +36,7 @@ export interface Settings {
     globalConcurrency: number;
     maxAttemptsPerScreen: number;
     gateRegenerateLimit: number;
+    spillover: boolean;
     hedge: { enabled: boolean; percentile: number; minSec: number; maxSec: number; maxPerBatch: number; allowCrossModel: boolean };
   };
   providers: ImageProvider[];
@@ -136,6 +137,7 @@ export interface ProjectRequest {
   extraBrandTokens: string[];
   compileDate: string;
   createdAt: string;
+  allowDropCodeDoc?: boolean;
 }
 
 export interface ProjectState {

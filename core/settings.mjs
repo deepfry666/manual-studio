@@ -33,6 +33,7 @@ export function defaultSettings() {
       globalConcurrency: 10,
       maxAttemptsPerScreen: 4,
       gateRegenerateLimit: 3,
+      spillover: true,
       hedge: {
         enabled: true,
         percentile: 85,

@@ -233,7 +233,8 @@ export async function runAttempt({
       throw new ProviderError(message, { status: response.status, ...classifyHttpError(400, message) });
     }
     const immediate = normalizeImageItems(readPath(data, mapping.response?.images || "$.data[*]"));
-    const foundTaskId = mapping.response?.taskId ? readPath(data, mapping.response.taskId) : undefined;
+    const rawTaskId = mapping.response?.taskId ? readPath(data, mapping.response.taskId) : undefined;
+    const foundTaskId = typeof rawTaskId === "number" ? String(rawTaskId) : rawTaskId;
     if (immediate.length && !(mapping.polling && foundTaskId)) {
       return { bytes: await materialize(immediate[0], fetchImpl, signal), taskId: null };
     }

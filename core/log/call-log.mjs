@@ -46,14 +46,18 @@ export function createCallLog(dataDir, fileName = "image-calls.jsonl") {
       }
       return result;
     },
-    /** 某条线路最近 window 次成功调用的耗时（秒）。探测调用和历史导入的都算。 */
+    /**
+     * 某条线路最近 window 次调用的耗时样本（秒），用来算补发线。
+     * 除了成功的调用，也计入「补发后被取消」和「超时」的调用（按已等待的时间算，真实耗时只会更长）。
+     * 否则慢的请求一旦被补发取消就不再进样本，补发线会越算越低、补发越来越多。
+     */
     recentSuccessSeconds(providerId, window = 50) {
       const values = [];
       for (let index = rows.length - 1; index >= 0 && values.length < window; index -= 1) {
         const row = rows[index];
-        if (row.providerId === providerId && row.ok && Number.isFinite(row.durationMs)) {
-          values.push(row.durationMs / 1000);
-        }
+        if (row.providerId !== providerId || !Number.isFinite(row.durationMs) || row.durationMs <= 0) continue;
+        const censored = (row.kind === "aborted" && row.outcome === "loser") || row.kind === "timeout";
+        if (row.ok || censored) values.push(row.durationMs / 1000);
       }
       return values;
     },

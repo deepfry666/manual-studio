@@ -110,7 +110,7 @@ export function createPipeline({ settingsStore, secrets, gateway, projectStore, 
       schema: PLAN_SCHEMA,
       check: (result) => planCheck(result, { softwareName: request.softwareName, screenCount }),
       temperature: 0.8,
-      maxTokens: 12000,
+      maxTokens: 8000,
     });
     const paths = projectPaths(projectDir);
     const tokens = forbiddenBrandTokens(request.softwareName, request.extraBrandTokens);
@@ -151,6 +151,11 @@ export function createPipeline({ settingsStore, secrets, gateway, projectStore, 
       statusBarPolicy: { mode: "consistent", battery: "same style across screens" },
       navigation: { type: nav.type, labels: nav.labels || [], order: nav.labels || [], iconSemantics: nav.iconSemantics || [] },
       forbiddenVisibleBranding: [...tokens, "App name", "name-bearing logo", "wordmark"],
+    });
+    // 重新规划后界面都变了：人工改过的提示词和说明不再对应，清掉标记让它们按新规划重写
+    await update(projectDir, (draft) => {
+      for (const id of Object.keys(draft.screens)) draft.screens[id] = { ...draft.screens[id], promptEdited: false, textEdited: false };
+      draft.overviewEdited = false;
     });
     await log(projectDir, `规划完成：${plan.screens.length} 屏（${plan.screens.map((screen) => screen.title).join("、")}）`);
     return { status: ctx.reviewPlan ? "review" : "done", screenCountReason: plan.coverageReason };
@@ -220,6 +225,8 @@ export function createPipeline({ settingsStore, secrets, gateway, projectStore, 
         imageWarnings: result.warnings || [],
         generatedAt: new Date().toISOString(),
         gate: null,
+        // 截图换了，这一屏的说明要按新截图重写（人工改过的会保留并提醒）
+        contentStale: true,
       };
       appendLog(draft, `${id} 已生成（${result.providerName || result.providerId}${result.hedged ? "，触发了超时补发" : ""}，${Math.round((result.durationMs || 0) / 1000)} 秒）`);
     });
@@ -245,8 +252,12 @@ export function createPipeline({ settingsStore, secrets, gateway, projectStore, 
     if (!needed.length) return { status: "done" };
     await log(projectDir, `开始生成 ${needed.length} 张截图（同时发出）`);
     const outcomes = await Promise.allSettled(needed.map((id) => generateScreen({ ...ctx, state }, id)));
-    const failed = outcomes.map((outcome, index) => (outcome.status === "rejected" ? `${needed[index]}：${outcome.reason?.message || outcome.reason}` : null)).filter(Boolean);
-    if (failed.length) throw new Error(`${failed.length} 张截图没有生成成功（其余已保存）：\n${failed.join("\n")}`);
+    const failures = outcomes.map((outcome, index) => (outcome.status === "rejected" ? { id: needed[index], message: outcome.reason?.message || String(outcome.reason) } : null)).filter(Boolean);
+    if (failures.length) {
+      const messages = [...new Set(failures.map((failure) => failure.message))];
+      const detail = messages.length === 1 ? `${failures.map((failure) => failure.id).join("、")}：${messages[0]}` : failures.map((failure) => `${failure.id}：${failure.message}`).join("\n");
+      throw new Error(`${failures.length} 张截图没有生成成功${failures.length < needed.length ? "（其余已保存）" : ""}：\n${detail}`);
+    }
     return { status: "done" };
   }
 
@@ -325,12 +336,13 @@ export function createPipeline({ settingsStore, secrets, gateway, projectStore, 
     const state = await projectStore.read(projectDir);
     const plan = await readPlan(projectDir);
     const paths = projectPaths(projectDir);
-    const floor = settings.pipeline.featureTextFloor || 300;
+    const floor = Math.max(300, settings.pipeline.featureTextFloor || 300);
     const existing = await readJson(paths.content, null);
     const existingById = new Map((existing?.screens || []).map((screen, index) => [screen.id || screenId(index), screen]));
     const planHash = hashObject({ profile: plan.profile, titles: plan.screens.map((screen) => screen.title) });
     const inventories = {};
     const targets = [];
+    const staleEdited = [];
     const contentHashes = {};
     for (const screen of plan.screens) {
       const gate = state.screens[screen.id]?.gate;
@@ -338,8 +350,12 @@ export function createPipeline({ settingsStore, secrets, gateway, projectStore, 
       const hash = hashObject({ title: screen.title, contract: screen.textContract, mustShow: screen.mustShow, sampleData: screen.sampleData, inventory: inventories[screen.id] || null });
       contentHashes[screen.id] = hash;
       const old = existingById.get(screen.id);
-      const keep = old?.text && !ctx.forceContent?.includes(screen.id) && (state.screens[screen.id]?.textEdited || state.screens[screen.id]?.contentHash === hash || (state.origin === "imported" && !state.screens[screen.id]?.contentHash));
+      const shot = state.screens[screen.id] || {};
+      const forced = ctx.forceContent?.includes(screen.id);
+      const unchanged = shot.contentHash ? shot.contentHash === hash : state.origin === "imported";
+      const keep = old?.text && !forced && (shot.textEdited || (unchanged && !shot.contentStale));
       if (!keep) targets.push(screen);
+      if (keep && shot.textEdited && shot.contentStale) staleEdited.push(screen.id);
     }
     const needOverview = !existing?.cover?.overview || (state.contentPlanHash && state.contentPlanHash !== planHash && !state.overviewEdited) || ctx.forceContent?.includes("overview");
     const written = {};
@@ -358,24 +374,37 @@ export function createPipeline({ settingsStore, secrets, gateway, projectStore, 
           schema: CONTENT_SCHEMA,
           check: (draft) => contentCheck(draft, { screens: chunk, needOverview: wantsOverview, floor }),
           temperature: 0.7,
-          maxTokens: 9000,
+          maxTokens: 8000,
         });
         if (wantsOverview) overview = String(result.overview).trim();
         for (const item of result.screens) written[item.id] = item;
       }
     }
+    const sameScreens = existing && existing.screens?.length === plan.screens.length && plan.screens.every((screen, index) => (existing.screens[index].id || screenId(index)) === screen.id && existing.screens[index].title);
+    const recordStaleWarning = (draft) => {
+      draft.warnings = draft.warnings.filter((warning) => !warning.startsWith("截图已更换"));
+      if (staleEdited.length) draft.warnings.push(`截图已更换，但这些屏的说明是人工改过的，没有自动重写，请检查是否还和新截图一致：${staleEdited.join("、")}`);
+    };
+    if (existing && sameScreens && !targets.length && !needOverview) {
+      await update(projectDir, (draft) => {
+        for (const [id, hash] of Object.entries(contentHashes)) draft.screens[id] = { ...(draft.screens[id] || {}), contentHash: hash, contentStale: staleEdited.includes(id) };
+        draft.contentPlanHash = planHash;
+        recordStaleWarning(draft);
+      });
+      return { status: "done" };
+    }
     const featureMap = plan.featureMap || {};
+    const regenerated = plan.screens.some((screen) => state.screens[screen.id]?.providerId);
     const content = {
       ...(existing || {}),
       softwareName: state.request.softwareName,
       versionPolicy: state.request.versionPolicy,
       ...(state.request.versionPolicy === "separate-metadata" && state.request.applicableVersion ? { applicableVersion: state.request.applicableVersion } : {}),
       createdAt: state.request.createdAt,
-      compileDate: state.request.compileDate || chineseDate(),
       screenshotCount: plan.screens.length,
       screenCountReason: featureMap.coverageReason || existing?.screenCountReason,
       featureTier: 300,
-      imageRoute: "image-gateway",
+      imageRoute: regenerated || !existing?.imageRoute ? "image-gateway" : existing.imageRoute,
       cover: { ...(existing?.cover || {}), overview },
       screens: plan.screens.map((screen, index) => {
         const old = existingById.get(screen.id) || {};
@@ -398,9 +427,11 @@ export function createPipeline({ settingsStore, secrets, gateway, projectStore, 
     await writeJsonAtomic(paths.content, content);
     await update(projectDir, (draft) => {
       for (const [id, hash] of Object.entries(contentHashes)) {
-        draft.screens[id] = { ...(draft.screens[id] || {}), contentHash: hash, ...(written[id] ? { textEdited: false } : {}) };
+        const keepStale = staleEdited.includes(id);
+        draft.screens[id] = { ...(draft.screens[id] || {}), contentHash: hash, contentStale: keepStale, ...(written[id] ? { textEdited: false } : {}) };
       }
       draft.contentPlanHash = planHash;
+      recordStaleWarning(draft);
       const missing = plan.screens.filter((screen) => !inventories[screen.id]).map((screen) => screen.id);
       draft.warnings = draft.warnings.filter((warning) => !warning.startsWith("文案未按截图对账"));
       if (missing.length && Object.keys(written).length) draft.warnings.push(`文案未按截图对账：${missing.join("、")}（没有看图模型的抄录结果）`);
@@ -431,7 +462,7 @@ export function createPipeline({ settingsStore, secrets, gateway, projectStore, 
       schema: DESIGN_SCHEMA,
       check: designCheck,
       temperature: 0.6,
-      maxTokens: 9000,
+      maxTokens: 8000,
     });
     content.design = { sections: result.sections.map((section) => ({ title: section.title.trim(), text: section.text.trim() })) };
     await writeJsonAtomic(paths.content, content);
@@ -457,8 +488,11 @@ export function createPipeline({ settingsStore, secrets, gateway, projectStore, 
       reviewed.push({ screenId: id, image: `screens/${id}.png`, sha256: sha });
     }
     if (pending.length) throw new Error(`这些截图还没有通过验收（或验收后图片被替换）：${pending.join("、")}`);
-    content.screenshotReview = { status: "passed", reviewedScreens: reviewed };
-    await writeJsonAtomic(paths.content, content);
+    const review = { status: "passed", reviewedScreens: reviewed };
+    if (JSON.stringify(content.screenshotReview) !== JSON.stringify(review)) {
+      content.screenshotReview = review;
+      await writeJsonAtomic(paths.content, content);
+    }
     return { status: "done" };
   }
 
@@ -469,8 +503,14 @@ export function createPipeline({ settingsStore, secrets, gateway, projectStore, 
     const paths = projectPaths(projectDir);
     const content = await readJson(paths.content, null);
     if (!content?.screenshotReview) throw new Error("没有审查回执，不能构建");
+    const currentBundle = paths.bundle(state.request.softwareName);
+    const hasCodeDoc = await exists(path.join(currentBundle, `${state.request.softwareName}指南_代码-（JAVA）.docx`));
+    if (!state.request.codeSource?.path && hasCodeDoc && !state.request.allowDropCodeDoc) {
+      throw new Error("现有交付包里有代码文档，但这个项目没有指定代码来源，重建后新交付包将不含代码文档（旧交付包会先归档）。请在「交付」里指定代码来源，或点「确认不含代码文档」后再继续。");
+    }
     content.softwareName = state.request.softwareName;
     content.compileDate = state.request.compileDate || chineseDate();
+    content.screens = content.screens.map((screen, index) => ({ ...screen, image: `screens/${screenId(index)}.png` }));
     const txtFields = { ...settings.txtFields, ...(state.request.txtFields || {}) };
     if (state.request.txtFields?.language) txtFields.languageOverride = true;
     const result = await buildBundle({
@@ -480,7 +520,7 @@ export function createPipeline({ settingsStore, secrets, gateway, projectStore, 
       codeSource: state.request.codeSource,
       txtFields,
       excludeDirs: settings.codeDefaults.excludeDirs,
-      floor: settings.pipeline.featureTextFloor || 300,
+      floor: Math.max(300, settings.pipeline.featureTextFloor || 300),
       extraBrandTokens: state.request.extraBrandTokens,
       stagingRoot: projectStore.stagingRoot,
       onLog: (message) => log(projectDir, message),
@@ -531,6 +571,9 @@ export function createPipeline({ settingsStore, secrets, gateway, projectStore, 
   }
 
   async function runInner(projectDir, options) {
+    const initial = await projectStore.read(projectDir);
+    if (!initial) return { status: "failed", error: "项目状态不存在" };
+    if (initial.readOnly) return { status: "failed", error: "只读的历史项目（没有文案和截图源文件），不能运行" };
     const settings = await settingsStore.get();
     const batchId = options.batchId || `${path.basename(projectDir)}:${timestampSlug()}`;
     const fromIndex = options.from ? PIPELINE_STEPS.indexOf(options.from) : 0;
@@ -661,7 +704,7 @@ export function createPipeline({ settingsStore, secrets, gateway, projectStore, 
       const sha = await sha256File(target);
       await update(projectDir, (state) => {
         const current = state.screens[id] || {};
-        state.screens[id] = { ...current, imageSha: sha, imagePromptHash: current.promptHash, gate: null, generatedAt: new Date().toISOString(), fromAlternate: true };
+        state.screens[id] = { ...current, imageSha: sha, imagePromptHash: current.promptHash, gate: null, generatedAt: new Date().toISOString(), fromAlternate: true, contentStale: true };
         appendLog(state, `${id} 已换成备选图`);
       });
       await markDirty(projectDir, ["gate", "content", "receipt", "build"]);
@@ -702,7 +745,8 @@ export function createPipeline({ settingsStore, secrets, gateway, projectStore, 
       delete content.screenshotReview;
       await writeJsonAtomic(paths.content, content);
       await update(projectDir, (state) => {
-        for (const id of editedIds) state.screens[id] = { ...(state.screens[id] || {}), textEdited: true };
+        for (const id of editedIds) state.screens[id] = { ...(state.screens[id] || {}), textEdited: true, contentStale: false };
+        if (editedIds.length) state.warnings = state.warnings.filter((warning) => !warning.startsWith("截图已更换"));
         if (typeof overview === "string") state.overviewEdited = true;
       });
       await markDirty(projectDir, ["receipt", "build"]);
@@ -730,7 +774,7 @@ export function createPipeline({ settingsStore, secrets, gateway, projectStore, 
       }
       if (["screenCount", "emphasis", "notes", "platform"].some((key) => patch[key] !== undefined && patch[key] !== before[key])) ["plan", "prompts", "images", "gate", "content", "receipt", "build"].forEach((step) => dirty.add(step));
       if (patch.wantDesign !== undefined && patch.wantDesign !== before.wantDesign) ["design", "receipt", "build"].forEach((step) => dirty.add(step));
-      if (["codeSource", "txtFields", "compileDate", "versionPolicy", "applicableVersion"].some((key) => patch[key] !== undefined)) dirty.add("build");
+      if (["codeSource", "txtFields", "compileDate", "versionPolicy", "applicableVersion", "allowDropCodeDoc"].some((key) => patch[key] !== undefined)) dirty.add("build");
       if (patch.extraBrandTokens !== undefined) ["gate", "receipt", "build"].forEach((step) => dirty.add(step));
       await update(projectDir, (draft) => {
         draft.request = next;

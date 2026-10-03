@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { App, Button, Card, Col, Form, Input, InputNumber, Radio, Row, Select, Switch, Typography, Empty } from "antd";
 import { call, formatTime } from "../../api";
 import type { ProjectDetail } from "../../types";
@@ -7,6 +7,7 @@ export function OverviewTab({ data, activity, running, onChanged }: { data: Proj
   const { message } = App.useApp();
   const [form] = Form.useForm();
   const request = data.state.request;
+  const requestKey = useMemo(() => JSON.stringify(request), [request]);
   useEffect(() => {
     form.setFieldsValue({
       autoCount: !request.screenCount,
@@ -19,7 +20,8 @@ export function OverviewTab({ data, activity, running, onChanged }: { data: Proj
       extraBrandTokens: request.extraBrandTokens || [],
       compileDate: request.compileDate,
     });
-  }, [data.dir, request, form]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data.dir, requestKey, form]);
 
   const save = async () => {
     const values = await form.validateFields();

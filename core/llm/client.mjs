@@ -95,9 +95,10 @@ export async function chatCompletion({ vendor, apiKey, model, messages, temperat
   if (!model) throw new LlmError("没有选择模型", { kind: "config" });
   let useJsonMode = jsonMode ?? vendor.jsonMode !== false;
   let useTemperature = true;
+  let tokenLimit = maxTokens;
   let lastError;
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    const body = { model, messages, max_tokens: maxTokens, stream: false };
+  for (let attempt = 0; attempt < 7; attempt += 1) {
+    const body = { model, messages, max_tokens: tokenLimit, stream: false };
     if (useTemperature) body.temperature = temperature;
     if (useJsonMode) body.response_format = { type: "json_object" };
     let response;
@@ -123,13 +124,20 @@ export async function chatCompletion({ vendor, apiKey, model, messages, temperat
     }
     if (!response.ok) {
       const message = redact(errorMessage(data, response.status), [apiKey]);
-      if (response.status === 400 && useJsonMode && /response_format|json_object|json mode/i.test(message)) {
-        useJsonMode = false;
-        continue;
-      }
-      if (response.status === 400 && useTemperature && /temperature/i.test(message)) {
-        useTemperature = false;
-        continue;
+      if (response.status === 400 || response.status === 422) {
+        // 兼容不同厂商的限制：输出上限（DeepSeek 为 8192）、不支持 JSON 模式、不支持 temperature
+        if (/max_tokens|max_completion_tokens|maximum.{0,30}tokens|tokens?.{0,20}(?:limit|exceed|range)|最大.{0,10}(?:token|长度)/i.test(message) && tokenLimit > 4096) {
+          tokenLimit = tokenLimit > 8192 ? 8192 : 4096;
+          continue;
+        }
+        if (useTemperature && /temperature/i.test(message)) {
+          useTemperature = false;
+          continue;
+        }
+        if (useJsonMode) {
+          useJsonMode = false;
+          continue;
+        }
       }
       const kind = response.status === 401 || response.status === 403 ? "auth" : response.status === 429 ? "quota" : response.status >= 500 ? "server" : "request";
       lastError = new LlmError(`HTTP ${response.status}：${message}`, { kind, status: response.status });
@@ -149,9 +157,11 @@ export async function chatCompletion({ vendor, apiKey, model, messages, temperat
  * 让模型按 JSON Schema 输出。不合格时把错误带回去让模型修一次。
  * images：data URL 数组，用于看图模型。
  */
-export async function chatJson({ vendor, apiKey, model, system, user, images = [], schema, check, temperature = 0.6, maxTokens = 6000, signal, fetchImpl = fetch, onUsage }) {
+export async function chatJson({ vendor, apiKey, model, system, user, images = [], schema, check, temperature = 0.6, maxTokens = 8000, signal, fetchImpl = fetch, onUsage }) {
+  // 智谱看图接口按官方示例传不带 data: 前缀的 base64
+  const imageUrl = (url) => (vendor?.preset === "zhipu" ? String(url).replace(/^data:[^;]+;base64,/, "") : url);
   const userContent = images.length
-    ? [{ type: "text", text: user }, ...images.map((url) => ({ type: "image_url", image_url: { url } }))]
+    ? [{ type: "text", text: user }, ...images.map((url) => ({ type: "image_url", image_url: { url: imageUrl(url) } }))]
     : user;
   const messages = [
     { role: "system", content: `${system}\n\n只输出一个 JSON 对象，不要输出任何解释、Markdown 或代码块标记。` },

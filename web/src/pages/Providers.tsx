@@ -317,6 +317,9 @@ function StrategyCard({ bundle, onSaved }: { bundle: SettingsBundle; onSaved: ()
         <Form.Item name={["hedge", "allowCrossModel"]} valuePropName="checked" label="允许补发到不同模型（画风可能和其他屏不一致）" extra="关闭时只补发到「画风组」相同的线路。比如把 CPA 的 gpt-image-2.5 和 APIMart 的 gpt-image-2.5-flare 设成同一个画风组。">
           <Switch />
         </Form.Item>
+        <Form.Item name="spillover" valuePropName="checked" label="首选线路满载时，分流到同画风组还有空位的线路" extra="比如 CPA 并发 4 已满，第 5 张图直接发给同组的 APIMart，而不是在 CPA 后面排队。关闭则严格按顺序排队。">
+          <Switch />
+        </Form.Item>
         <Form.Item name="gateRegenerateLimit" label="截图验收不通过时，每屏最多重生几次">
           <InputNumber min={1} max={6} />
         </Form.Item>

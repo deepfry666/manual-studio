@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { App, Button, Checkbox, Form, Input, InputNumber, Modal, Radio, Select, Space, Switch, Table, Tag, Tooltip, Typography } from "antd";
+import { Alert, App, Button, Checkbox, Form, Input, InputNumber, Modal, Radio, Select, Space, Switch, Table, Tag, Tooltip, Typography } from "antd";
 import { FolderOpenOutlined, ImportOutlined, PlusOutlined, UnorderedListOutlined } from "@ant-design/icons";
 import { call, formatTime } from "../api";
 import { GRADE_LABEL, PROJECT_STATUS, STEP_LABELS, STEP_ORDER, navigate, useDebounced, useLoader, useSettings, useStudioEvents } from "../hooks";
@@ -26,7 +26,7 @@ export function ProjectsPage() {
   const { message, modal } = App.useApp();
   const projects = useLoader(() => call<ProjectSummary[]>("listProjects"));
   const settings = useSettings();
-  const reload = useDebounced(projects.reload, 400);
+  const reload = useDebounced(projects.reload, 1200);
   useStudioEvents((event) => {
     if (event.type === "project" || event.type === "batch") reload();
   });
@@ -71,6 +71,7 @@ export function ProjectsPage() {
           </Button>
         </Space>
       </div>
+      <SetupHint />
       <Space style={{ marginBottom: 12 }} wrap>
         <Input.Search allowClear placeholder="按软件名搜索" style={{ width: 260 }} onChange={(event) => setQuery(event.target.value)} />
         <Select
@@ -100,7 +101,14 @@ export function ProjectsPage() {
         size="middle"
         pagination={{ pageSize: 50, showSizeChanger: false, showTotal: (total) => `共 ${total} 个` }}
         rowSelection={{ selectedRowKeys: selected, onChange: (keys) => setSelected(keys as string[]), getCheckboxProps: (record) => ({ disabled: record.readOnly }) }}
-        onRow={(record) => ({ onClick: () => navigate("project", record.dir), style: { cursor: "pointer" } })}
+        onRow={(record) => ({
+          onClick: (event) => {
+            // 点复选框只做勾选，不进入详情
+            if ((event.target as HTMLElement).closest(".ant-table-selection-column, .ant-checkbox-wrapper")) return;
+            navigate("project", record.dir);
+          },
+          style: { cursor: "pointer" },
+        })}
         locale={{ emptyText: "还没有项目。点右上角「新建项目」，或者「导入历史项目」把 skill 做过的项目接进来。" }}
         columns={[
           {
@@ -435,5 +443,36 @@ function ImportModal({ open, onClose, onImported }: { open: boolean; onClose: ()
         ]}
       />
     </Modal>
+  );
+}
+
+/** 首次使用：没有可用的生图线路或没有给规划/文案选模型时，提示先去配置。 */
+function SetupHint() {
+  const settings = useSettings();
+  const data = settings.data;
+  if (!data) return null;
+  const providers = data.settings.providers.filter((provider) => provider.enabled && data.providerKeys[provider.id]);
+  const assignments = data.settings.llm.assignments;
+  const missing: { text: string; page: string }[] = [];
+  if (!providers.length) missing.push({ text: "还没有可用的生图线路（需要启用并填好密钥）", page: "providers" });
+  if (!assignments.plan || !assignments.content) missing.push({ text: "还没有给「规划界面」和「撰写说明文字」选择大模型", page: "llm" });
+  if (!missing.length) return null;
+  return (
+    <Alert
+      style={{ marginBottom: 12 }}
+      type="info"
+      showIcon
+      message="开始之前先完成配置"
+      description={
+        <Space direction="vertical" size={2}>
+          {missing.map((item) => (
+            <span key={item.page}>
+              {item.text}，<a onClick={() => navigate(item.page)}>去配置</a>
+            </span>
+          ))}
+          {!assignments.gate && <span className="muted">截图验收没有配置看图模型时，需要人工逐张确认截图里没有软件名。</span>}
+        </Space>
+      }
+    />
   );
 }

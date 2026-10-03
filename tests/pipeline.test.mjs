@@ -178,8 +178,24 @@ test("导入历史项目：沿用截图和回执，重建时不重新生图", { 
   assert.deepEqual(fs.readdirSync(copy).sort(), before, "导入不往项目里写文件");
   const project = await ctx.core.getProject(copy);
   assert.ok(project.state.warnings.some((warning) => warning.includes("固定正文")));
-  // 重建（没有代码来源 → 只出指南）
+  // 什么都不改直接「检查并更新」：不重写任何文件、不重建
+  const snapshot = () => fs.readdirSync(copy, { recursive: true }).filter((name) => !String(name).includes("archive")).map((name) => {
+    const full = path.join(copy, String(name));
+    const stat = fs.statSync(full);
+    return stat.isFile() ? `${name}|${stat.size}|${stat.mtimeMs}` : null;
+  }).filter(Boolean).sort().join("\n");
+  const beforeRun = snapshot();
+  const idle = await ctx.core.run(copy);
+  assert.equal(idle.status, "done");
+  assert.equal(snapshot(), beforeRun, "历史项目没有变化时，一个文件都不改");
+
+  // 改了编制日期需要重建：现有交付包有代码文档但没有代码来源 → 先停下来要求确认
   await ctx.core.actions.updateRequest(copy, { compileDate: "2026年10月3日" });
+  const blocked = await ctx.core.run(copy);
+  assert.equal(blocked.status, "failed");
+  assert.match(blocked.error, /确认不含代码文档/);
+  assert.ok(fs.readdirSync(path.join(copy, "心云购电商广告运营平台 V1.0")).some((name) => name.includes("_代码-（JAVA）")), "停下来时旧交付包原样保留");
+  await ctx.core.actions.updateRequest(copy, { allowDropCodeDoc: true });
   const result = await ctx.core.run(copy);
   const after = await ctx.core.getProject(copy);
   assert.equal(result.status, "done", after.state.lastError || "");
@@ -188,4 +204,21 @@ test("导入历史项目：沿用截图和回执，重建时不重新生图", { 
   const bundle = fs.readdirSync(path.join(copy, "心云购电商广告运营平台 V1.0"));
   assert.ok(bundle.every((name) => !name.includes("_代码-（JAVA）")));
   assert.ok(fs.readdirSync(path.join(copy, "archive")).some((name) => name.includes("-交付-")), "旧交付包已归档");
+});
+
+test("重生截图后，这一屏的说明按新截图重写；人工改过的保留并提醒", { timeout: 180_000 }, async (t) => {
+  const ctx = await setupCore();
+  t.after(ctx.close);
+  const dir = await ctx.core.createProject({ softwareName: "重写测试 V1.0", screenCount: 3 });
+  assert.equal((await ctx.core.run(dir)).status, "done");
+  const before = JSON.parse(fs.readFileSync(path.join(dir, "content.json"), "utf8"));
+  const edited = "人工改过的第三屏说明。".repeat(30);
+  await ctx.core.actions.saveContent(dir, { screens: [{ id: "screen-03", text: edited }] });
+  await ctx.core.actions.regenerateScreen(dir, "screen-02");
+  await ctx.core.actions.regenerateScreen(dir, "screen-03");
+  const after = JSON.parse(fs.readFileSync(path.join(dir, "content.json"), "utf8"));
+  assert.notEqual(after.screens[1].text, before.screens[1].text, "第二屏说明已按新截图重写");
+  assert.equal(after.screens[2].text, edited, "人工改过的第三屏保留");
+  const project = await ctx.core.getProject(dir);
+  assert.ok(project.state.warnings.some((warning) => warning.includes("截图已更换") && warning.includes("screen-03")));
 });

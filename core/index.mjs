@@ -18,6 +18,7 @@ import { assertSafeSoftwareName } from "./build/build.mjs";
 import { findLibreOffice, resetLibreOfficeCache } from "./build/runtime.mjs";
 import { LLM_PRESETS, listModels, chatCompletion } from "./llm/client.mjs";
 import { readJson, writeJsonAtomic, createSerialQueue, exists } from "./util/fsx.mjs";
+import { solidPng } from "./util/png.mjs";
 
 function newId(prefix) {
   return `${prefix}-${crypto.randomBytes(3).toString("hex")}`;
@@ -206,8 +207,9 @@ export async function createCore({ dataDir, cipher, toPng, visionImage, fetchImp
       const vendor = settings.llm.vendors.find((item) => item.id === id);
       const apiKey = await secrets.get(secretIds.llmVendor(id));
       const started = Date.now();
+      const imageUrl = `data:image/png;base64,${solidPng(64, 64, [220, 38, 38]).toString("base64")}`;
       const content = vision
-        ? [{ type: "text", text: "图里是什么颜色？只回答一个词。" }, { type: "image_url", image_url: { url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEklEQVR4nGP4z8DAwMDAAAQAAP//AwD9AUOz6QAAAABJRU5ErkJggg==" } }]
+        ? [{ type: "text", text: "这张图主要是什么颜色？只回答一个词。" }, { type: "image_url", image_url: { url: vendor.preset === "zhipu" ? imageUrl.replace(/^data:[^;]+;base64,/, "") : imageUrl } }]
         : "回复「连接正常」四个字。";
       const result = await chatCompletion({ vendor, apiKey, model, messages: [{ role: "user", content }], maxTokens: 50, jsonMode: false, fetchImpl, timeoutMs: 60_000 });
       return { ok: true, reply: result.text.slice(0, 100), ms: Date.now() - started };
@@ -274,6 +276,10 @@ export async function createCore({ dataDir, cipher, toPng, visionImage, fetchImp
       const errors = [];
       for (const row of rows) {
         try {
+          if (row.codeSourcePath) {
+            if (!path.isAbsolute(row.codeSourcePath)) throw new Error("代码来源要写完整路径（以 / 开头）");
+            if (!(await exists(row.codeSourcePath))) throw new Error(`代码来源不存在：${row.codeSourcePath}`);
+          }
           const dir = await api.createProject({
             softwareName: row.softwareName,
             screenCount: row.screenCount || defaults.screenCount || null,
@@ -325,7 +331,10 @@ export async function createCore({ dataDir, cipher, toPng, visionImage, fetchImp
       const name = String(newName || "").trim();
       assertSafeSoftwareName(name);
       if (pipeline.isRunning(dir)) throw new Error("项目正在运行，先停止");
+      const queued = (await batch.list()).items.some((item) => item.projectDir === dir && ["queued", "running"].includes(item.status));
+      if (queued) throw new Error("项目还在批量队列里，先从队列移除再改名");
       const state = await projectStore.read(dir);
+      if (state.request.softwareName === name) return dir;
       await pipeline.actions.updateRequest(dir, { softwareName: name });
       // 文件夹名和软件名一致时，一并改名
       let finalDir = dir;
@@ -372,6 +381,17 @@ export async function createCore({ dataDir, cipher, toPng, visionImage, fetchImp
     dismissJob: (jobId) => ledger.dismiss(jobId),
 
     async start() {
+      // 清理一天前失败构建留下的临时文件夹（成功的构建会自己清理）
+      try {
+        const stagingRoot = projectStore.stagingRoot;
+        for (const name of await fsp.readdir(stagingRoot)) {
+          const target = path.join(stagingRoot, name);
+          const stat = await fsp.stat(target);
+          if (Date.now() - stat.mtimeMs > 86400_000) await fsp.rm(target, { recursive: true, force: true });
+        }
+      } catch {
+        // 没有临时文件夹
+      }
       await gateway.resumePending().catch(() => []);
       await batch.init();
     },

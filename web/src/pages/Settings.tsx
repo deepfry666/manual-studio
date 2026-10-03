@@ -87,8 +87,8 @@ export function SettingsPage() {
               <Form.Item name={["pipeline", "reviewPlanSingle"]} label="单个项目：规划完先停下让我确认" valuePropName="checked">
                 <Switch />
               </Form.Item>
-              <Form.Item name={["pipeline", "featureTextFloor"]} label="每屏说明最少字符数" extra="按普通字符串长度计，和旧 skill 一样是 300">
-                <InputNumber min={100} max={1000} />
+              <Form.Item name={["pipeline", "featureTextFloor"]} label="每屏说明最少字符数" extra="按普通字符串长度计。排版模板固定要求至少 300，所以不能低于 300。">
+                <InputNumber min={300} max={1000} />
               </Form.Item>
             </Card>
           </Col>

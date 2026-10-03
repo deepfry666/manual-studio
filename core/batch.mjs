@@ -37,7 +37,8 @@ export function createBatchQueue({ dataDir, settingsStore, pipeline, emit = () =
       await persist();
       notify();
       const promise = pipeline
-        .run(item.projectDir, { reviewPlan: false, batchId: item.batchId })
+        // 补发额度按「每个项目每次运行」计算，不在整个批量之间共用
+        .run(item.projectDir, { reviewPlan: false })
         .then((result) => {
           item.status = result.status === "done" ? "done" : result.status === "waiting" ? "needs-attention" : result.status === "canceled" ? "paused" : "failed";
           item.error = result.error || (result.status === "waiting" ? `等待确认：${result.step}` : null);

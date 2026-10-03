@@ -20,11 +20,11 @@ const STEP_STATUS: Record<StepStatus, "wait" | "process" | "finish" | "error"> =
 };
 
 export function ProjectDetailPage({ dir }: { dir: string }) {
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const project = useLoader(() => call<ProjectDetail>("getProject", dir), [dir]);
   const reload = useDebounced(project.reload, 250);
   const [activity, setActivity] = useState<string[]>([]);
-  const [tab, setTab] = useState("screens");
+  const [tab, setTab] = useState<string | null>(null);
   useStudioEvents((event) => {
     if (event.projectDir !== dir) return;
     reload();
@@ -52,6 +52,7 @@ export function ProjectDetailPage({ dir }: { dir: string }) {
   }
   const data = project.data;
   const { state } = data;
+  const activeTab = tab || (data.screens.some((screen) => screen.file) ? "screens" : "overview");
   const running = data.running || state.status === "running";
   const readOnly = Boolean(state.readOnly);
   const status = PROJECT_STATUS[running ? "running" : state.status] || { label: state.status, color: "default" };
@@ -81,6 +82,22 @@ export function ProjectDetailPage({ dir }: { dir: string }) {
               打开文件夹
             </Button>
           </Tooltip>
+          <Button
+            disabled={running}
+            onClick={() =>
+              modal.confirm({
+                title: "从列表移除这个项目？",
+                content: "只是不在软件里显示，项目文件夹和里面的文件不会删除。以后可以用「导入历史项目」重新加回来。",
+                okText: "移除",
+                onOk: async () => {
+                  await call("removeFromList", dir);
+                  navigate("projects");
+                },
+              })
+            }
+          >
+            从列表移除
+          </Button>
           {running ? (
             <Button danger icon={<PauseOutlined />} onClick={() => call("cancel", dir)}>
               停止
@@ -129,7 +146,7 @@ export function ProjectDetailPage({ dir }: { dir: string }) {
       />
 
       <Tabs
-        activeKey={tab}
+        activeKey={activeTab}
         onChange={setTab}
         items={[
           { key: "overview", label: "概览", children: <OverviewTab data={data} activity={activity} running={running} onChanged={project.reload} /> },

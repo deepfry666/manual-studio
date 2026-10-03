@@ -1,7 +1,7 @@
 import path from "node:path";
 import { readJson, writeJsonAtomic, createSerialQueue } from "../util/fsx.mjs";
 
-const KEEP_FINISHED_DAYS = 14;
+const KEEP_FINISHED_DAYS = 3;
 
 /**
  * 生图任务账本（思路来自四季画布的 run ledger）：

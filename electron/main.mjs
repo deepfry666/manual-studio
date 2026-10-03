@@ -184,7 +184,17 @@ async function captureScreens(dir) {
   }
 }
 
+// 只允许开一个：两个实例同时写同一份数据会出错
+const isPrimaryInstance = Boolean(process.env.MS_AUTOMATION || process.env.MS_SCREENSHOT_DIR) || app.requestSingleInstanceLock();
+if (!isPrimaryInstance) app.quit();
+app.on("second-instance", () => {
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.focus();
+});
+
 app.whenReady().then(async () => {
+  if (!isPrimaryInstance) return;
   const dataDir = process.env.MS_DATA_DIR || app.getPath("userData");
   // MS_TEST_MEMORY_SECRETS 仅用于开发自检：密钥只放内存，不碰系统钥匙串
   core = await createCore({ dataDir, cipher: process.env.MS_TEST_MEMORY_SECRETS ? undefined : cipher, toPng, visionImage, onEvent: send });

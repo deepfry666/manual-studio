@@ -286,3 +286,50 @@ test("所有线路都失败时报出每条线路的原因，日志里不出现�
   assert.doesNotMatch(logText, /sk-test-secret-value/);
   assert.match(ctx.health.unavailableReason("bad"), /配置错误/);
 });
+
+test("首选线路满载时分流到同画风组的空闲线路", async (t) => {
+  const a = await startMockRelay(() => ({ delayMs: 400 }));
+  const b = await startMockRelay(() => ({ delayMs: 400 }));
+  t.after(() => Promise.all([a.close(), b.close()]));
+  const ctx = await setup(
+    [
+      { id: "a", baseUrl: a.baseUrl, overrides: { concurrency: 1, modelGroup: "g" } },
+      { id: "b", baseUrl: b.baseUrl, overrides: { concurrency: 3, modelGroup: "g" } },
+    ],
+    { hedge: { enabled: false } }
+  );
+  const started = Date.now();
+  const results = await Promise.all(["screen-01", "screen-02", "screen-03", "screen-04"].map((id) => ctx.gateway.generate(ctx.request(id))));
+  assert.equal(results.filter((result) => result.providerId === "a").length, 1);
+  assert.equal(results.filter((result) => result.providerId === "b").length, 3);
+  assert.ok(Date.now() - started < 900, "4 张同时出图，而不是在 A 上排队");
+});
+
+test("关闭分流时按顺序排队，不用后面的线路", async (t) => {
+  const a = await startMockRelay(() => ({ delayMs: 100 }));
+  const b = await startMockRelay(() => ({ delayMs: 100 }));
+  t.after(() => Promise.all([a.close(), b.close()]));
+  const ctx = await setup([{ id: "a", baseUrl: a.baseUrl, overrides: { concurrency: 1, modelGroup: "g" } }, { id: "b", baseUrl: b.baseUrl, overrides: { modelGroup: "g" } }], { spillover: false, hedge: { enabled: false } });
+  const results = await Promise.all(["screen-01", "screen-02", "screen-03"].map((id) => ctx.gateway.generate(ctx.request(id))));
+  assert.ok(results.every((result) => result.providerId === "a"));
+});
+
+test("线路只收固定像素尺寸时，按报错改用宽高比最接近的那个", async (t) => {
+  const relay = await startMockRelay((index, body) =>
+    body.size === "864x1824" ? { status: 400, error: "Invalid value: '864x1824'. Supported values are: '1024x1024', '1024x1536', '1536x1024', and 'auto'." } : { delayMs: 20 }
+  );
+  t.after(() => relay.close());
+  const ctx = await setup([{ id: "openai", baseUrl: relay.baseUrl }], { hedge: { enabled: false } });
+  const result = await ctx.gateway.generate(ctx.request("screen-01"));
+  assert.equal(result.requestSize, "1024x1536");
+  assert.deepEqual(ctx.updates[0].patch, { sizeMode: "pixel", pixelSize: "1024x1536" });
+});
+
+test("补发线样本包含被补发取消的慢请求，避免补发线越算越低", async () => {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "calllog-"));
+  const log = createCallLog(dir);
+  for (let index = 0; index < 5; index += 1) await log.append({ providerId: "p", ok: true, kind: "success", durationMs: 10_000 });
+  await log.append({ providerId: "p", ok: false, kind: "aborted", outcome: "loser", durationMs: 90_000 });
+  await log.append({ providerId: "p", ok: false, kind: "aborted", outcome: "canceled", durationMs: 5_000 });
+  assert.deepEqual(log.recentSuccessSeconds("p").sort((a, b) => a - b), [10, 10, 10, 10, 10, 90]);
+});

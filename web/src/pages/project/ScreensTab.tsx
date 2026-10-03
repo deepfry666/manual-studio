@@ -40,7 +40,13 @@ export function ScreensTab({ data, running, onChanged }: { data: ProjectDetail; 
 
   const manual = async (screen: ScreenItem, passed: boolean) => {
     await call("action", "manualGate", data.dir, screen.id, passed);
-    message.success(passed ? "已确认这张截图里没有软件名" : "已标记为不合格，可以重生或换备选图");
+    const remaining = data.screens.filter((item) => item.id !== screen.id && !["passed", "manual-passed"].includes(item.state.gate?.status || ""));
+    if (passed && remaining.length === 0) {
+      message.success("全部截图已确认，继续生成文案和交付包");
+      await call("run", data.dir);
+    } else {
+      message.success(passed ? `已确认没有软件名${remaining.length ? `，还剩 ${remaining.length} 张` : ""}` : "已标记为不合格，可以重生或换备选图");
+    }
     onChanged();
   };
 
@@ -100,7 +106,7 @@ export function ScreensTab({ data, running, onChanged }: { data: ProjectDetail; 
                   {screen.state.hedged && <Tag color="blue">补发胜出</Tag>}
                   {screen.state.promptEdited && data.state.origin !== "imported" && <Tag color="purple">提示词已改</Tag>}
                 </Space>
-                {gate?.status === "failed" && <Typography.Text type="danger" style={{ fontSize: 12 }}>{(gate.reasons || []).join("；")}</Typography.Text>}
+                {(gate?.status === "failed" || gate?.status === "error") && <Typography.Text type="danger" style={{ fontSize: 12 }}>{(gate.reasons || []).join("；")}</Typography.Text>}
                 {gate?.status === "needs-manual" && (
                   <Space>
                     <Button size="small" type="primary" onClick={() => manual(screen, true)}>

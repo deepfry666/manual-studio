@@ -2,7 +2,7 @@ import path from "node:path";
 import fsp from "node:fs/promises";
 import crypto from "node:crypto";
 import { runAttempt, probeModels, ProviderError, sleep } from "./adapter.mjs";
-import { resolveRequestSize, nearestRatio, parsePixelSize } from "./sizes.mjs";
+import { resolveRequestSize, parsePixelSize, sizeFallback } from "./sizes.mjs";
 import { checkScreenImage } from "./image-check.mjs";
 import { isAsyncProvider, hostOf, modelGroupOf } from "./presets.mjs";
 import { percentile } from "../log/call-log.mjs";
@@ -39,6 +39,9 @@ export class Semaphore {
         { once: true }
       );
     });
+  }
+  hasCapacity() {
+    return this.active < this.limit && this.waiters.length === 0;
   }
   release() {
     this.active = Math.max(0, this.active - 1);
@@ -137,9 +140,15 @@ export function createImageGateway({
    * 生成一屏。request: { projectDir, projectName, screenId, prompt, outputPath, alternatesDir, archiveRoot, batchId, signal }
    */
   async function generate(request) {
+    if (request.signal?.aborted) throw new ProviderError("已取消", { kind: "aborted" });
     const screenKey = `${request.projectDir}::${request.screenId}`;
     const inflight = inflightByScreen.get(screenKey);
-    if (inflight) return inflight;
+    if (inflight) {
+      const result = await inflight;
+      // 重启后续查的任务失败了：这一屏重新正常生成
+      if (result?.resumed && !result.ok) return generate(request);
+      return result;
+    }
     const promise = generateInner(request).finally(() => inflightByScreen.delete(screenKey));
     inflightByScreen.set(screenKey, promise);
     return promise;
@@ -184,12 +193,16 @@ export function createImageGateway({
       const emit = (event) => onEvent({ jobId, projectDir: request.projectDir, screenId: request.screenId, ...event });
 
       function nextProvider() {
-        for (const provider of providers) {
-          if (job.tried.includes(provider.id)) continue;
-          if (health.unavailableReason(provider.id)) continue;
-          return provider;
+        const candidates = providers.filter((provider) => !job.tried.includes(provider.id) && !health.unavailableReason(provider.id));
+        const first = candidates[0];
+        if (!first) return null;
+        // 首选线路满载时，分流到同画风组里还有空位的线路（不改变画风）
+        if (imageSettings.spillover !== false && !providerSemaphore(first).hasCapacity()) {
+          const group = modelGroupOf(first);
+          const spare = candidates.find((provider) => provider !== first && modelGroupOf(provider) === group && providerSemaphore(provider).hasCapacity());
+          if (spare) return spare;
         }
-        return null;
+        return first;
       }
 
       function unavailableSummary() {
@@ -250,10 +263,11 @@ export function createImageGateway({
         job.started += 1;
         const signal = attempt.controller.signal;
         try {
-          await globalSemaphore.acquire(signal);
-          attempt.holdsGlobal = true;
+          // 先等线路名额再占全局名额：排队等某条线路的任务不占全局名额，补发和分流不会被堵住
           await providerSemaphore(provider).acquire(signal);
           attempt.holdsProvider = true;
+          await globalSemaphore.acquire(signal);
+          attempt.holdsGlobal = true;
         } catch (error) {
           releaseSlots(attempt);
           handleFailure(attempt, error);
@@ -276,6 +290,12 @@ export function createImageGateway({
         });
         emit({ type: "attempt-start", providerId: provider.id, providerName: provider.name, role, requestSize: sizeSpec.size });
         const apiKey = await secrets.get(secretIds.imageProvider(provider.id));
+        if (job.settled) {
+          releaseSlots(attempt);
+          job.active.delete(attempt.attemptId);
+          await ledger.finishAttempt(jobId, attempt.attemptId, { state: "aborted", outcome: "not-needed" });
+          return;
+        }
         if (!apiKey) {
           releaseSlots(attempt);
           handleFailure(attempt, new ProviderError("这条线路还没有填写密钥", { kind: "auth" }));
@@ -414,14 +434,12 @@ export function createImageGateway({
         emit({ type: "attempt-failed", providerId: attempt.provider.id, providerName: attempt.provider.name, kind: error.kind, message });
         if (job.settled || wasBackground && job.active.size > 0) return;
 
-        if (error.kind === "size" && !job.sizeOverrides.has(attempt.provider.id)) {
-          // 线路不收像素尺寸：从报错里取允许的比例，改成比例立即重试，并记到线路配置里。
-          const target = parsePixelSize(imageSettings.targetSize) || { width: 864, height: 1824 };
-          const ratios = error.allowedRatios?.length ? error.allowedRatios : attempt.provider.ratios;
-          const ratio = nearestRatio(target, ratios || []) || "9:16";
-          job.sizeOverrides.set(attempt.provider.id, { mode: "ratio", size: ratio });
-          await updateProvider(attempt.provider.id, { sizeMode: "ratio", ratios: error.allowedRatios?.length ? error.allowedRatios : attempt.provider.ratios });
-          emit({ type: "size-switched", providerId: attempt.provider.id, ratio });
+        const fallback = error.kind === "size" && !job.sizeOverrides.has(attempt.provider.id) ? sizeFallback(error, attempt.provider, imageSettings.targetSize, attempt.sizeSpec?.size) : null;
+        if (fallback) {
+          // 线路不支持当前尺寸：按报错改用它支持的尺寸立即重试，并记到线路配置里，以后直接用对的尺寸
+          job.sizeOverrides.set(attempt.provider.id, fallback.spec);
+          await updateProvider(attempt.provider.id, fallback.patch);
+          emit({ type: "size-switched", providerId: attempt.provider.id, ratio: fallback.spec.size });
           job.tried = job.tried.filter((id) => id !== attempt.provider.id);
           job.started -= 1;
           launch(attempt.provider, attempt.role);
@@ -442,13 +460,13 @@ export function createImageGateway({
 
       function onHedgeTimer(attempt) {
         if (job.settled || job.hedged || !job.active.has(attempt.attemptId)) return;
-        if (request.batchId && (hedge.maxPerBatch ?? 3) >= 0) {
+        const candidate = pickHedgeProvider(providers, attempt.provider, job.tried, hedge);
+        if (!candidate) return;
+        if (request.batchId) {
           const used = hedgesByBatch.get(request.batchId) || 0;
           if (used >= (hedge.maxPerBatch ?? 3)) return;
           hedgesByBatch.set(request.batchId, used + 1);
         }
-        const candidate = pickHedgeProvider(providers, attempt.provider, job.tried, hedge);
-        if (!candidate) return;
         job.hedged = true;
         emit({ type: "hedge", fromProviderId: attempt.provider.id, providerId: candidate.id, providerName: candidate.name });
         launch(candidate, "hedge");
@@ -529,7 +547,13 @@ export function createImageGateway({
         });
       const key = `${job.projectDir}::${job.screenId}`;
       if (!inflightByScreen.has(key)) {
-        const tracked = promise.then(() => ({ resumed: true, outputPath: job.outputPath })).finally(() => inflightByScreen.delete(key));
+        const tracked = promise
+          .then(() => {
+            const latest = ledger.get(job.jobId);
+            const ok = latest?.state === "done" && latest.winnerAttemptId === attempt.attemptId;
+            return { resumed: true, ok, jobId: job.jobId, outputPath: job.outputPath, providerId: provider.id, providerName: provider.name, model: provider.model, requestSize: attempt.requestSize, durationMs: now() - startedAt, hedged: false, attempts: 1, warnings: [] };
+          })
+          .finally(() => inflightByScreen.delete(key));
         inflightByScreen.set(key, tracked);
       }
       resumed.push(job.jobId);
@@ -569,11 +593,10 @@ export function createImageGateway({
       } catch (error) {
         const message = redact(error.message, secretValues);
         await callLog.append({ providerId: provider.id, providerName: provider.name, model: provider.model, role: "probe", ok: false, kind: error.kind || "unknown", durationMs: now() - startedAt, requestSize: sizeSpec.size, errorMessage: message });
-        if (error.kind === "size" && round === 0) {
-          const target = parsePixelSize(settings.image.targetSize) || { width: 864, height: 1824 };
-          const ratios = error.allowedRatios?.length ? error.allowedRatios : provider.ratios;
-          sizeSpec = { mode: "ratio", size: nearestRatio(target, ratios || []) || "9:16" };
-          await updateProvider(provider.id, { sizeMode: "ratio", ratios });
+        const fallback = error.kind === "size" && round === 0 ? sizeFallback(error, provider, settings.image.targetSize, sizeSpec.size) : null;
+        if (fallback) {
+          sizeSpec = fallback.spec;
+          await updateProvider(provider.id, fallback.patch);
           report.sizeSwitched = sizeSpec.size;
           continue;
         }

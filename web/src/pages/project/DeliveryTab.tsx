@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Alert, App, Button, Card, Col, Collapse, Descriptions, Empty, Form, Input, List, Row, Select, Space, Typography } from "antd";
 import { BuildOutlined, FileZipOutlined, FolderOpenOutlined } from "@ant-design/icons";
 import { call, formatTime } from "../../api";
@@ -36,13 +36,19 @@ export function DeliveryTab({ data, running, onChanged }: { data: ProjectDetail;
   const readOnly = Boolean(data.state.readOnly);
   const build = data.state.lastBuild;
 
+  const codeKey = useMemo(() => JSON.stringify(request.codeSource), [request.codeSource]);
+  const txtKey = useMemo(() => JSON.stringify(request.txtFields), [request.txtFields]);
   useEffect(() => {
     setCodePath(request.codeSource?.path || "");
     setExtensions(request.codeSource?.extensions || [".java"]);
-  }, [request.codeSource]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [codeKey]);
   useEffect(() => {
+    txtForm.resetFields();
     txtForm.setFieldsValue(request.txtFields || {});
-  }, [request.txtFields, txtForm]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [txtKey, txtForm]);
+  const oldCodeDoc = data.bundleFiles.some((file) => file.includes("_代码-（JAVA）"));
 
   const inspect = async (target = codePath, exts = extensions) => {
     if (!target) return;
@@ -57,9 +63,9 @@ export function DeliveryTab({ data, running, onChanged }: { data: ProjectDetail;
     }
   };
 
-  const saveCode = async (target: string | null) => {
-    await call("action", "updateRequest", data.dir, { codeSource: target ? { path: target, extensions } : null });
-    message.success(target ? "代码来源已保存，重建交付包时生效" : "已清除代码来源，重建后不含代码文档");
+  const saveCode = async (target: string | null, exts = extensions) => {
+    await call("action", "updateRequest", data.dir, { codeSource: target ? { path: target, extensions: exts } : null });
+    message.success(target ? "代码来源已保存，下次生成交付包时生效" : "已清除代码来源，以后生成的交付包不含代码文档");
     onChanged();
   };
 
@@ -88,6 +94,7 @@ export function DeliveryTab({ data, running, onChanged }: { data: ProjectDetail;
                   if (picked) {
                     setCodePath(picked);
                     inspect(picked);
+                    saveCode(picked);
                   }
                 }}
               >
@@ -95,12 +102,22 @@ export function DeliveryTab({ data, running, onChanged }: { data: ProjectDetail;
               </Button>
             </Space.Compact>
             <Space wrap>
-              <Select mode="tags" style={{ minWidth: 260 }} value={extensions} disabled={readOnly || running} onChange={setExtensions} options={[".java", ".kt", ".swift", ".dart", ".js", ".ts", ".vue", ".py", ".go", ".cs"].map((value) => ({ value, label: value }))} />
+              <Select
+                mode="tags"
+                style={{ minWidth: 260 }}
+                value={extensions}
+                disabled={readOnly || running}
+                onChange={(value: string[]) => {
+                  setExtensions(value);
+                  if (codePath) {
+                    saveCode(codePath, value);
+                    inspect(codePath, value);
+                  }
+                }}
+                options={[".java", ".kt", ".swift", ".dart", ".js", ".ts", ".vue", ".py", ".go", ".cs"].map((value) => ({ value, label: value }))}
+              />
               <Button loading={inspecting} disabled={!codePath} onClick={() => inspect()}>
                 统计
-              </Button>
-              <Button type="primary" disabled={readOnly || running || !codePath} onClick={() => saveCode(codePath)}>
-                保存
               </Button>
               {request.codeSource && (
                 <Button danger disabled={readOnly || running} onClick={() => saveCode(null)}>
@@ -129,6 +146,25 @@ export function DeliveryTab({ data, running, onChanged }: { data: ProjectDetail;
               />
             )}
           </Card>
+          {!request.codeSource && oldCodeDoc && !readOnly && (
+            <Alert
+              type="warning"
+              showIcon
+              message="现有交付包里有代码文档，但这个项目没有指定代码来源"
+              description={
+                (request as { allowDropCodeDoc?: boolean }).allowDropCodeDoc
+                  ? "已确认：下次生成的交付包不含代码文档，旧交付包会先归档。"
+                  : "历史项目的代码文档来自旧 skill 的固定正文。请在上面指定这个软件的代码来源；如果确定不需要代码文档，点右边的按钮确认，否则生成交付包时会停下来。"
+              }
+              action={
+                !(request as { allowDropCodeDoc?: boolean }).allowDropCodeDoc && (
+                  <Button size="small" onClick={async () => { await call("action", "updateRequest", data.dir, { allowDropCodeDoc: true }); onChanged(); }}>
+                    确认不含代码文档
+                  </Button>
+                )
+              }
+            />
+          )}
           <Collapse
             items={[
               {

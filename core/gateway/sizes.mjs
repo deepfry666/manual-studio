@@ -40,7 +40,7 @@ export function parseAllowedRatios(message) {
 }
 
 export function looksLikeUnsupportedPixelSize(message) {
-  return /pixel sizes? (?:are|is) not supported|not support(?:ed)? pixel|不支持像素|size must be one of|invalid (?:image )?size|must be (?:auto or )?one of/i.test(
+  return /pixel sizes? (?:are|is) not supported|not support(?:ed)? pixel|不支持像素|size must be one of|invalid (?:image )?size|must be (?:auto or )?one of|invalid value: '\d+x\d+'|supported (?:sizes|values) (?:are|is)/i.test(
     String(message || "")
   );
 }
@@ -57,4 +57,35 @@ export function resolveRequestSize(provider, targetSize) {
   }
   const pixel = parsePixelSize(provider.pixelSize) || target;
   return { mode: "pixel", size: `${pixel.width}x${pixel.height}` };
+}
+
+/** 从报错里取允许的像素尺寸，例如 OpenAI 官方的 '1024x1536'。 */
+export function parseAllowedPixelSizes(message) {
+  const found = String(message || "").match(/\b\d{3,4}x\d{3,4}\b/g) || [];
+  return [...new Set(found)];
+}
+
+/**
+ * 线路报尺寸不支持时，算出该改用的尺寸：
+ * - 报错里列了像素尺寸 → 选宽高比最接近的那个；
+ * - 报错里列了比例 → 选最接近的比例；
+ * - 只说不支持像素、没列选项 → 用线路配置里的比例表；
+ * - 都没有 → 返回 null，不改配置，当普通失败处理。
+ */
+export function sizeFallback(error, provider, targetSize, currentSize) {
+  const target = parsePixelSize(targetSize) || { width: 864, height: 1824 };
+  const pixels = parseAllowedPixelSizes(error.message).filter((size) => size !== currentSize);
+  if (pixels.length) {
+    const goal = Math.log(target.width / target.height);
+    const best = pixels
+      .map((size) => ({ size, parsed: parsePixelSize(size) }))
+      .sort((a, b) => Math.abs(Math.log(a.parsed.width / a.parsed.height) - goal) - Math.abs(Math.log(b.parsed.width / b.parsed.height) - goal))[0];
+    return { spec: { mode: "pixel", size: best.size }, patch: { sizeMode: "pixel", pixelSize: best.size } };
+  }
+  const ratios = (error.allowedRatios || []).length >= 2 ? error.allowedRatios : null;
+  if (ratios) return { spec: { mode: "ratio", size: nearestRatio(target, ratios) }, patch: { sizeMode: "ratio", ratios } };
+  if (/pixel sizes? (?:are|is) not supported|不支持像素/i.test(error.message) && provider.ratios?.length) {
+    return { spec: { mode: "ratio", size: nearestRatio(target, provider.ratios) }, patch: { sizeMode: "ratio" } };
+  }
+  return null;
 }
