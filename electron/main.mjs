@@ -200,6 +200,7 @@ app.whenReady().then(async () => {
     if (!handler) throw new Error(`未知方法：${method}`);
     return handler(...(Array.isArray(args) ? args : []));
   });
+  if (process.platform === "darwin" && !app.isPackaged) app.dock?.setIcon(path.join(here, "..", "build", "icon.iconset", "icon_512x512.png"));
   createWindow();
   core.start().catch((error) => send({ type: "log", level: "error", message: `启动恢复失败：${error.message}` }));
   if (process.env.MS_SCREENSHOT_DIR) mainWindow.webContents.once("did-finish-load", () => captureScreens(process.env.MS_SCREENSHOT_DIR));
