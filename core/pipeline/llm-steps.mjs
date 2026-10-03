@@ -111,7 +111,8 @@ export function planCheck(plan, { softwareName, screenCount }) {
   const tokens = forbiddenBrandTokens(softwareName);
   const visibleFields = [
     ...(plan.uiContract?.navigation?.labels || []),
-    ...screens.flatMap((screen) => [screen.title, ...(screen.mustShow || []), ...(screen.sampleData || [])]),
+    // 画面描述会直接进生图提示词，里面出现软件名就很可能被画出来
+    ...screens.flatMap((screen) => [screen.title, screen.visualBrief || "", ...(screen.mustShow || []), ...(screen.sampleData || [])]),
   ];
   const hits = findBrandHits(visibleFields, tokens);
   if (hits.length) problems.push(`界面文字里出现了软件名/品牌词：${hits.join("、")}，请换成不含软件名的说法`);
