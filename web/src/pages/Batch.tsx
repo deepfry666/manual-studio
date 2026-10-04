@@ -15,6 +15,7 @@ const STATUS: Record<BatchItem["status"], { label: string; color: string }> = {
 
 export function BatchPage() {
   const { message } = App.useApp();
+  const act = (method: string, ...args: unknown[]) => call(method, ...args).catch((error: Error) => message.error(error.message));
   const queue = useLoader(() => call<{ items: BatchItem[]; paused: boolean }>("batchList"));
   useStudioEvents((event) => {
     if (event.type === "batch") queue.setData({ items: event.items as BatchItem[], paused: Boolean(event.paused) });
@@ -28,11 +29,11 @@ export function BatchPage() {
         <h2>批量队列</h2>
         <Space>
           {queue.data?.paused ? (
-            <Button type="primary" icon={<CaretRightOutlined />} onClick={() => call("batchResume")}>
+            <Button type="primary" icon={<CaretRightOutlined />} onClick={() => act("batchResume")}>
               继续
             </Button>
           ) : (
-            <Button icon={<PauseOutlined />} onClick={() => call("batchPause")}>
+            <Button icon={<PauseOutlined />} onClick={() => act("batchPause")}>
               暂停全部
             </Button>
           )}
@@ -69,11 +70,11 @@ export function BatchPage() {
             render: (_, item) => (
               <Space>
                 {["failed", "needs-attention", "paused"].includes(item.status) && (
-                  <Button size="small" onClick={() => call("batchRetry", item.id)}>
+                  <Button size="small" onClick={() => act("batchRetry", item.id)}>
                     重试
                   </Button>
                 )}
-                <Button size="small" type="text" danger onClick={() => call("batchRemove", item.id)}>
+                <Button size="small" type="text" danger onClick={() => act("batchRemove", item.id)}>
                   移除
                 </Button>
               </Space>

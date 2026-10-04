@@ -120,10 +120,30 @@ function methods() {
       if (result.canceled) return null;
       return fsp.readFile(result.filePaths[0], "utf8");
     },
-    openPath: (target) => shell.openPath(target),
-    showInFolder: (target) => shell.showItemInFolder(target),
+    openPath: async (target) => {
+      await assertOpenable(target);
+      return shell.openPath(target);
+    },
+    showInFolder: async (target) => {
+      await assertOpenable(target);
+      return shell.showItemInFolder(target);
+    },
     appInfo: () => ({ version: app.getVersion(), dataDir: process.env.MS_DATA_DIR || app.getPath("userData"), platform: process.platform }),
   };
+}
+
+/** 只允许打开工作区和已登记项目里的文件夹、文档和图片，不打开可执行程序。 */
+async function assertOpenable(target) {
+  const resolved = path.resolve(String(target || ""));
+  const settings = (await core.getSettings()).settings;
+  const projects = (await core.listProjects()).map((project) => project.dir);
+  const roots = [settings.workspaceDir, ...projects].map((root) => path.resolve(root));
+  const inside = roots.some((root) => resolved === root || resolved.startsWith(root + path.sep));
+  if (!inside) throw new Error("只能打开工作区和项目里的文件");
+  const stat = await fsp.stat(resolved).catch(() => null);
+  if (!stat) throw new Error(`文件不存在：${resolved}`);
+  if (stat.isFile() && !/\.(docx|pdf|txt|json|png|jpe?g|webp|zip|md|csv)$/i.test(resolved)) throw new Error("这种类型的文件不能从这里打开");
+  if (stat.isDirectory() && /\.app$/i.test(resolved)) throw new Error("不能从这里打开应用程序");
 }
 
 function createWindow() {

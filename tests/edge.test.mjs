@@ -253,3 +253,58 @@ test("批量：暂停、继续、软件重启后自动续跑", async (t) => {
   }
   assert.deepEqual(list.items.map((item) => item.status), ["done", "done"]);
 });
+
+test("截图编号不合法会被拒绝；项目运行中不能修改", async (t) => {
+  const ctx = await coreWithMocks({ relayBehavior: () => ({ delayMs: 800 }) });
+  t.after(ctx.close);
+  const dir = await ctx.core.createProject({ softwareName: "安全测试 V1.0", screenCount: 2 });
+  await assert.rejects(ctx.core.actions.savePrompt(dir, "../../evil", "x"), /不合法/);
+  await assert.rejects(ctx.core.actions.manualGate(dir, "screen-1", true), /不合法/);
+  const running = ctx.core.run(dir);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  await assert.rejects(ctx.core.actions.updateRequest(dir, { emphasis: "x" }), /正在运行/);
+  await assert.rejects(ctx.core.actions.savePrompt(dir, "screen-01", "x"), /正在运行/);
+  assert.equal((await running).status, "done");
+  assert.ok(!fs.existsSync(path.join(dir, "..", "..", "evil.md")));
+});
+
+test("历史回执字段顺序不同、多了字段：内容一致就不重写 content.json", async (t) => {
+  const ctx = await coreWithMocks();
+  t.after(ctx.close);
+  const dir = await ctx.core.createProject({ softwareName: "回执测试 V1.0", screenCount: 2 });
+  assert.equal((await ctx.core.run(dir)).status, "done");
+  const file = path.join(dir, "content.json");
+  const content = JSON.parse(fs.readFileSync(file, "utf8"));
+  content.screenshotReview = { reviewedAt: "2026-09-01", reviewedScreens: content.screenshotReview.reviewedScreens.map((item) => ({ sha256: item.sha256, image: item.image, screenId: item.screenId, note: "人工" })), status: "passed" };
+  fs.writeFileSync(file, JSON.stringify(content, null, 2));
+  const before = fs.readFileSync(file, "utf8");
+  await ctx.core.actions.updateRequest(dir, { compileDate: "2026年10月4日" });
+  assert.equal((await ctx.core.run(dir)).status, "done");
+  const after = JSON.parse(fs.readFileSync(file, "utf8"));
+  assert.equal(after.screenshotReview.reviewedAt, "2026-09-01", "回执原样保留");
+  assert.notEqual(before, "");
+});
+
+test("缺标准提示词的历史项目：检查更新不写文件，重生某一屏时才补写这一屏的提示词", async (t) => {
+  const ctx = await coreWithMocks();
+  t.after(ctx.close);
+  const dir = await ctx.core.createProject({ softwareName: "旧项目 V1.0", screenCount: 2 });
+  assert.equal((await ctx.core.run(dir)).status, "done");
+  // 变成「旧 skill 做的历史项目」：没有本软件的状态，提示词是非标准文件名
+  await ctx.core.removeFromList(dir);
+  fs.rmSync(path.join(dir, "generation-record.json"));
+  fs.renameSync(path.join(dir, "prompts", "screen-01.md"), path.join(dir, "prompts", "screen-01-login.md"));
+  fs.rmSync(path.join(dir, "prompts", "screen-02.md"));
+  await ctx.core.importProjects([dir]);
+  const files = () => fs.readdirSync(path.join(dir, "prompts")).sort().join(",");
+  const before = files();
+  assert.equal((await ctx.core.run(dir)).status, "done");
+  assert.equal(files(), before, "检查更新不补写提示词");
+  const submits = ctx.relay.submits().length;
+  await ctx.core.actions.updateRequest(dir, { allowDropCodeDoc: true });
+  await ctx.core.actions.regenerateScreen(dir, "screen-02");
+  assert.equal(ctx.relay.submits().length, submits + 1);
+  assert.ok(fs.existsSync(path.join(dir, "prompts", "screen-02.md")), "重生时补写了这一屏");
+  assert.ok(!fs.existsSync(path.join(dir, "prompts", "screen-01.md")), "没动其他屏");
+  assert.match(fs.readFileSync(path.join(dir, "prompts", "screen-02.md"), "utf8"), /Do NOT render the software name/);
+});

@@ -210,7 +210,24 @@ export function createPipeline({ settingsStore, secrets, gateway, projectStore, 
   async function generateScreen(ctx, id, { reason } = {}) {
     const { projectDir, state } = ctx;
     const paths = projectPaths(projectDir);
-    const prompt = await fsp.readFile(paths.promptFile(id), "utf8");
+    let prompt;
+    if (await exists(paths.promptFile(id))) {
+      prompt = await fsp.readFile(paths.promptFile(id), "utf8");
+    } else {
+      // 历史项目缺这一屏的标准提示词：按规划现拼一份再生成
+      const settings = ctx.settings || (await settingsStore.get());
+      const plan = await readPlan(projectDir);
+      const screen = plan?.screens?.find((item) => item.id === id);
+      if (!screen) throw new Error(`${id} 没有提示词，规划里也找不到这一屏`);
+      const platform = state.request.platform || settings.pipeline.platform;
+      const ui = normalizedUi(plan);
+      prompt = composeScreenPrompt({ softwareName: state.request.softwareName, platform, targetSize: settings.image.targetSize, ui, screen });
+      await fsp.mkdir(paths.prompts, { recursive: true });
+      await writeFileAtomic(paths.promptFile(id), prompt);
+      await update(projectDir, (draft) => {
+        draft.screens[id] = { ...(draft.screens[id] || {}), promptHash: promptIdentity(prompt, state.request.softwareName), planRowHash: planRowHash(screen, ui, platform, settings.image.targetSize), promptEdited: false };
+      });
+    }
     emit({ type: "screen", projectDir, screenId: id, status: "generating", reason });
     const result = await gateway.generate({
       projectDir,
@@ -334,7 +351,8 @@ export function createPipeline({ settingsStore, secrets, gateway, projectStore, 
         record.history.push({ at: gate.checkedAt, event: "gate", screenId: screen.id, status: gate.status, method: "vision", reasons: gate.reasons });
       });
       if (verdict.passed) return gate;
-      if (round >= limit - 1) return gate;
+      // limit = 每屏最多自动重生几次（设置里的数字），用完还不通过就交给人处理
+      if (round >= limit) return gate;
       await generateScreen({ ...ctx, state }, screen.id, { reason: "验收不通过，重新生成" });
     }
   }
@@ -515,7 +533,16 @@ export function createPipeline({ settingsStore, secrets, gateway, projectStore, 
     }
     if (pending.length) throw new Error(`这些截图还没有通过验收（或验收后图片被替换）：${pending.join("、")}`);
     const review = { status: "passed", reviewedScreens: reviewed };
-    if (JSON.stringify(content.screenshotReview) !== JSON.stringify(review)) {
+    const existingReview = content.screenshotReview;
+    const sameReview =
+      existingReview?.status === "passed" &&
+      Array.isArray(existingReview.reviewedScreens) &&
+      existingReview.reviewedScreens.length === reviewed.length &&
+      reviewed.every((item, index) => {
+        const old = existingReview.reviewedScreens[index] || {};
+        return old.screenId === item.screenId && old.image === item.image && old.sha256 === item.sha256;
+      });
+    if (!sameReview) {
       content.screenshotReview = review;
       await writeJsonAtomic(paths.content, content);
     }
@@ -711,6 +738,13 @@ export function createPipeline({ settingsStore, secrets, gateway, projectStore, 
     });
   }
 
+  function assertScreenId(id) {
+    if (!/^screen-\d{2}$/.test(String(id))) throw new Error(`截图编号不合法：${id}`);
+  }
+  function assertIdle(projectDir) {
+    if (running.has(projectDir)) throw new Error("项目正在运行，先停止再修改");
+  }
+
   const actions = {
     async confirmPlan(projectDir) {
       await update(projectDir, (state) => {
@@ -720,6 +754,8 @@ export function createPipeline({ settingsStore, secrets, gateway, projectStore, 
       return run(projectDir, { from: "prompts" });
     },
     async savePlanScreen(projectDir, id, patch) {
+      assertScreenId(id);
+      assertIdle(projectDir);
       const paths = projectPaths(projectDir);
       const plan = await readJson(paths.screenPlan, null);
       // 兼容历史格式：数组 / { screens } / { flow }，行里用 id 或 screenId
@@ -733,6 +769,8 @@ export function createPipeline({ settingsStore, secrets, gateway, projectStore, 
       await markDirty(projectDir, ["prompts"]);
     },
     async savePrompt(projectDir, id, prompt) {
+      assertScreenId(id);
+      assertIdle(projectDir);
       const paths = projectPaths(projectDir);
       await writeFileAtomic(paths.promptFile(id), ensureBrandBan(prompt));
       await update(projectDir, (state) => {
@@ -741,9 +779,12 @@ export function createPipeline({ settingsStore, secrets, gateway, projectStore, 
       await markDirty(projectDir, ["prompts"]);
     },
     async regenerateScreen(projectDir, id) {
+      assertScreenId(id);
       return run(projectDir, { from: "images", forceScreens: [id] });
     },
     async useAlternate(projectDir, id, file) {
+      assertScreenId(id);
+      assertIdle(projectDir);
       const paths = projectPaths(projectDir);
       const alternates = await listAlternates(projectDir, id);
       if (!alternates.some((item) => item.file === file)) throw new Error("备选图不存在");
@@ -770,6 +811,8 @@ export function createPipeline({ settingsStore, secrets, gateway, projectStore, 
       await markDirty(projectDir, ["gate", "content", "receipt", "build"]);
     },
     async manualGate(projectDir, id, passed) {
+      assertScreenId(id);
+      assertIdle(projectDir);
       const paths = projectPaths(projectDir);
       const state = await projectStore.read(projectDir);
       const sha = await sha256File(paths.screenFile(id));
@@ -792,6 +835,7 @@ export function createPipeline({ settingsStore, secrets, gateway, projectStore, 
       });
     },
     async saveContent(projectDir, { overview, screens }) {
+      assertIdle(projectDir);
       const paths = projectPaths(projectDir);
       const content = await readJson(paths.content, null);
       if (!content) throw new Error("还没有文案");
@@ -817,6 +861,7 @@ export function createPipeline({ settingsStore, secrets, gateway, projectStore, 
       await markDirty(projectDir, ["receipt", "build"]);
     },
     async rewriteContent(projectDir, ids) {
+      for (const id of ids) if (id !== "overview") assertScreenId(id);
       await update(projectDir, (state) => {
         for (const id of ids) if (state.screens[id]) state.screens[id].textEdited = false;
         if (ids.includes("overview")) state.overviewEdited = false;
@@ -824,6 +869,7 @@ export function createPipeline({ settingsStore, secrets, gateway, projectStore, 
       return run(projectDir, { from: "content", forceContent: ids });
     },
     async updateRequest(projectDir, patch) {
+      assertIdle(projectDir);
       const state = await projectStore.read(projectDir);
       const before = state.request;
       const next = { ...before, ...patch };

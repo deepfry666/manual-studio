@@ -10,13 +10,13 @@ import { startMockRelay } from "./helpers/mock-relay.mjs";
 import { startMockLlm } from "./helpers/mock-llm.mjs";
 import { findLibreOffice } from "../core/build/runtime.mjs";
 
-async function setupCore({ gateBrandOnce = [] } = {}) {
+async function setupCore({ gateBrandOnce = [], gateBrandAlways = [] } = {}) {
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), "pipeline-test-"));
   const dataDir = path.join(root, "data");
   const workspace = path.join(root, "workspace");
   await fsp.mkdir(workspace, { recursive: true });
   const relay = await startMockRelay(() => ({ delayMs: 80 }));
-  const llm = await startMockLlm({ gateBrandOnce });
+  const llm = await startMockLlm({ gateBrandOnce, gateBrandAlways });
   const core = await createCore({ dataDir });
   await core.updateSettings({ workspaceDir: workspace, pipeline: { reviewPlanSingle: false } });
   await core.saveProvider({ id: "cpa", preset: "openai-sync", name: "CPA", baseUrl: relay.baseUrl, model: "gpt-image-2.5", apiKey: "sk-image-test" });
@@ -259,4 +259,18 @@ test("历史项目改名：不重新生图，只重新验收，提示词里的�
   assert.match(prompt, /云购运营助手 V2\.0/);
   assert.doesNotMatch(prompt, /心云购电商广告运营平台 V1\.0/);
   assert.ok(fs.existsSync(path.join(newDir, "云购运营助手 V2.0", "云购运营助手 V2.0指南.docx")));
+});
+
+test("验收一直不通过：按设置的次数自动重生，用完后停下交给人处理", { timeout: 120_000 }, async (t) => {
+  const ctx = await setupCore({ gateBrandAlways: ["新增账单"] });
+  t.after(ctx.close);
+  await ctx.core.updateSettings({ image: { gateRegenerateLimit: 2 } });
+  const dir = await ctx.core.createProject({ softwareName: "重生上限 V1.0", screenCount: 3 });
+  const result = await ctx.core.run(dir);
+  assert.equal(result.status, "failed");
+  assert.equal(result.step, "gate");
+  assert.equal(ctx.relay.submits().filter((submit) => submit.prompt.includes("新增账单")).length, 3, "首次生成 1 次 + 自动重生 2 次");
+  const project = await ctx.core.getProject(dir);
+  assert.equal(project.state.screens["screen-03"].gate.status, "failed");
+  assert.match(project.state.lastError, /screen-03/);
 });

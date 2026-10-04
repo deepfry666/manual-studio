@@ -87,7 +87,7 @@ export async function createCore({ dataDir, cipher, toPng, visionImage, fetchImp
       origin: state.origin,
       grade: state.imported?.grade || null,
       readOnly: Boolean(state.readOnly),
-      status: alive ? (pipeline.isRunning(entry.dir) ? "running" : state.status) : "missing",
+      status: !alive ? "missing" : state.readOnly ? "readonly" : pipeline.isRunning(entry.dir) ? "running" : state.status,
       steps: Object.fromEntries(PIPELINE_STEPS.map((step) => [step, state.steps[step]?.status || "pending"])),
       screens: Object.keys(state.screens).length || state.request.screenCount || 0,
       hasCodeSource: Boolean(state.request.codeSource?.path),

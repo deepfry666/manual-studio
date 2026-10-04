@@ -55,7 +55,7 @@ export function ProjectDetailPage({ dir }: { dir: string }) {
   const activeTab = tab || (data.screens.some((screen) => screen.file) ? "screens" : "overview");
   const running = data.running || state.status === "running";
   const readOnly = Boolean(state.readOnly);
-  const status = PROJECT_STATUS[running ? "running" : state.status] || { label: state.status, color: "default" };
+  const status = PROJECT_STATUS[running ? "running" : readOnly ? "readonly" : state.status] || { label: state.status, color: "default" };
   const waitingStep = STEP_ORDER.find((step) => state.steps[step]?.status === "review");
 
   const run = async (options: Record<string, unknown> = {}) => {

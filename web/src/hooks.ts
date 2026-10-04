@@ -89,6 +89,7 @@ export const PROJECT_STATUS: Record<string, { label: string; color: string }> = 
   "needs-attention": { label: "需要处理", color: "error" },
   canceled: { label: "已停止", color: "default" },
   missing: { label: "文件夹不见了", color: "error" },
+  readonly: { label: "只读", color: "default" },
 };
 
 export const GRADE_LABEL: Record<string, { label: string; color: string }> = {

@@ -86,6 +86,7 @@ export function ProjectsPage() {
             { value: "needs-attention", label: "需要处理" },
             { value: "idle", label: "未完成" },
             { value: "imported", label: "导入的历史项目" },
+            { value: "readonly", label: "只读" },
           ]}
         />
         {selected.length > 0 && (
@@ -134,6 +135,7 @@ export function ProjectsPage() {
             title: "进度",
             width: 220,
             render: (_, record) => {
+              if (record.readOnly) return <span className="muted">只有交付包，没有源文件</span>;
               const { done, current } = stepProgress(record);
               return (
                 <Tooltip title={record.lastError || (current ? `下一步：${STEP_LABELS[current]}` : "全部完成")}>

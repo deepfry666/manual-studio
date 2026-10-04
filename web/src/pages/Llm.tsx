@@ -131,8 +131,12 @@ function AssignmentRow({ step, label, needsVision, bundle, onSaved }: { step: st
           <Button
             type="primary"
             onClick={async () => {
-              await call("setAssignment", step, vendorId && model ? { vendorId, model } : null);
-              message.success(`「${label}」已保存`);
+              if (vendorId && !model.trim()) {
+                message.warning("请填写模型名（可以先点厂商的「获取模型」再从下拉里选）");
+                return;
+              }
+              await call("setAssignment", step, vendorId && model.trim() ? { vendorId, model: model.trim() } : null);
+              message.success(vendorId ? `「${label}」已保存` : `「${label}」已清空，不使用大模型`);
               onSaved();
             }}
           >

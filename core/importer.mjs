@@ -112,7 +112,8 @@ export async function createImportedState(dir, info) {
   for (let index = 0; index < (content?.screens?.length || 0); index += 1) {
     if (!(await exists(paths.promptFile(screenId(index))))) promptsAll = false;
   }
-  if (plan && promptsAll) state.steps.prompts = { status: "done", finishedAt: state.imported.importedAt };
+  // 缺标准提示词文件的历史项目也算「提示词」完成：只有真要重生某一屏时才补写那一屏的提示词
+  if (plan) state.steps.prompts = { status: "done", finishedAt: state.imported.importedAt, message: promptsAll ? null : "部分提示词不是标准文件名，重生时再补写" };
   if (content?.screens?.length) {
     state.steps.images = { status: "done", finishedAt: state.imported.importedAt };
     state.steps.content = { status: "done", finishedAt: state.imported.importedAt };

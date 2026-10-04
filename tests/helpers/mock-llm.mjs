@@ -51,7 +51,7 @@ export async function startMockLlm(options = {}) {
         const seen = gateSeen.get(title) || 0;
         gateSeen.set(title, seen + 1);
         calls.push({ step: "gate", model: request.model, title, hasImage: Array.isArray(userContent) && userContent.some((part) => part.type === "image_url") });
-        const brand = (options.gateBrandOnce || []).includes(title) && seen === 0;
+        const brand = ((options.gateBrandOnce || []).includes(title) && seen === 0) || (options.gateBrandAlways || []).includes(title);
         result = {
           singleScreen: true,
           portraitApp: true,
