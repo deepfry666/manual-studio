@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, shell, safeStorage, nativeImage, protocol, net, Notification, nativeTheme } from "electron";
+import { app, BrowserWindow, ipcMain, dialog, shell, safeStorage, nativeImage, protocol, net, Notification } from "electron";
 import path from "node:path";
 import fsp from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -186,10 +186,13 @@ function createWindow() {
     minWidth: 1120,
     minHeight: 720,
     title: APP_NAME,
-    // macOS 27 样式：隐藏标题栏，红绿灯放进浮起来的侧边栏面板左上角
+    // macOS 27 样式：隐藏标题栏，红绿灯放进浮起来的侧边栏面板左上角；
+    // 窗口底层用系统原生毛玻璃（透出桌面），界面在上面叠液态玻璃
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 26, y: 26 },
-    backgroundColor: nativeTheme.shouldUseDarkColors ? "#161618" : "#F2F2F5",
+    vibrancy: "under-window",
+    visualEffectState: "active",
+    backgroundColor: "#00000000",
     show: false,
     webPreferences: {
       preload: path.join(here, "preload.cjs"),

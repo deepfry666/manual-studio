@@ -61,6 +61,7 @@ export function App() {
 
   return (
     <Layout className="app-shell" style={{ height: "100%" }}>
+      <LiquidGlassFilter />
       <Sider width={212} className="app-sider" theme="light">
         {/* 顶部留给红绿灯按钮，可拖动窗口 */}
         <div className="sider-top" />
@@ -94,5 +95,22 @@ export function App() {
         </Content>
       </Layout>
     </Layout>
+  );
+}
+
+/**
+ * 液态玻璃的折射：用低频噪声做位移，让玻璃后面滚过的内容产生轻微的「液体」扭曲。
+ * 只给浮动工具栏这类控件层用（backdrop-filter: url(#liquid-glass)），内容本身不扭曲。
+ */
+function LiquidGlassFilter() {
+  return (
+    <svg width="0" height="0" style={{ position: "absolute" }} aria-hidden="true">
+      <filter id="liquid-glass" x="0%" y="0%" width="100%" height="100%" colorInterpolationFilters="sRGB">
+        <feTurbulence type="fractalNoise" baseFrequency="0.006 0.011" numOctaves="2" seed="7" result="noise" />
+        <feGaussianBlur in="noise" stdDeviation="3" result="softNoise" />
+        <feDisplacementMap in="SourceGraphic" in2="softNoise" scale="26" xChannelSelector="R" yChannelSelector="G" result="refracted" />
+        <feGaussianBlur in="refracted" stdDeviation="7" />
+      </filter>
+    </svg>
   );
 }

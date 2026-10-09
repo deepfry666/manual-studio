@@ -16,11 +16,18 @@
   --segment-selected: #ffffff;
   --segment-shadow: 0 2px 6px rgba(0, 0, 0, 0.1), 0 0 0 0.5px rgba(0, 0, 0, 0.05);
   --thumb-bg: #e9e9ee;
-  /* 侧边栏：偏实色的着色玻璃（macOS 27 降低了透明度） */
-  --glass-bg: rgba(255, 255, 255, 0.72);
-  --glass-edge: rgba(255, 255, 255, 0.9);
-  --glass-shadow: 0 8px 30px rgba(0, 0, 0, 0.07), 0 0 0 0.5px rgba(0, 0, 0, 0.07);
-  --box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 0 0 0.5px rgba(0, 0, 0, 0.05);
+  /* 玻璃：窗口底层是系统原生毛玻璃（透出桌面），控件层再叠一层带高光边的液态玻璃 */
+  --window-tint: rgba(242, 242, 247, 0.6);
+  --content-box: rgba(255, 255, 255, 0.82);
+  --glass-bg: rgba(255, 255, 255, 0.34);
+  --glass-toolbar: rgba(255, 255, 255, 0.42);
+  --glass-strong: rgba(255, 255, 255, 0.62);
+  --glass-rim-top: rgba(255, 255, 255, 0.98);
+  --glass-rim-bottom: rgba(255, 255, 255, 0.4);
+  --glass-inner: inset 0 1px 1px rgba(255, 255, 255, 0.9), inset 0 -1px 2px rgba(255, 255, 255, 0.35), inset 0 0 28px rgba(255, 255, 255, 0.28);
+  --glass-shadow: 0 14px 44px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.06), 0 0 0 0.5px rgba(0, 0, 0, 0.06);
+  --glass-shadow-small: 0 4px 14px rgba(0, 0, 0, 0.1), 0 0 0 0.5px rgba(0, 0, 0, 0.06);
+  --box-shadow: 0 2px 10px rgba(0, 0, 0, 0.04), 0 0 0 0.5px rgba(0, 0, 0, 0.06);
   color-scheme: light;
 }
 
@@ -40,10 +47,17 @@
   --segment-selected: #636366;
   --segment-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
   --thumb-bg: #1f1f21;
-  --glass-bg: rgba(44, 44, 46, 0.78);
-  --glass-edge: rgba(255, 255, 255, 0.08);
-  --glass-shadow: 0 8px 30px rgba(0, 0, 0, 0.4), 0 0 0 0.5px rgba(255, 255, 255, 0.06);
-  --box-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.06);
+  --window-tint: rgba(18, 18, 20, 0.58);
+  --content-box: rgba(44, 44, 46, 0.8);
+  --glass-bg: rgba(70, 70, 76, 0.28);
+  --glass-toolbar: rgba(58, 58, 62, 0.42);
+  --glass-strong: rgba(110, 110, 118, 0.42);
+  --glass-rim-top: rgba(255, 255, 255, 0.32);
+  --glass-rim-bottom: rgba(255, 255, 255, 0.08);
+  --glass-inner: inset 0 1px 1px rgba(255, 255, 255, 0.22), inset 0 -1px 2px rgba(255, 255, 255, 0.05), inset 0 0 28px rgba(255, 255, 255, 0.05);
+  --glass-shadow: 0 14px 44px rgba(0, 0, 0, 0.5), 0 0 0 0.5px rgba(255, 255, 255, 0.06);
+  --glass-shadow-small: 0 4px 14px rgba(0, 0, 0, 0.4), 0 0 0 0.5px rgba(255, 255, 255, 0.08);
+  --box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25), 0 0 0 0.5px rgba(255, 255, 255, 0.07);
   color-scheme: dark;
 }
 
@@ -55,8 +69,9 @@ body,
   margin: 0;
 }
 
+/* 窗口底色透明：系统原生毛玻璃从这里透出来 */
 body {
-  background: var(--content-bg);
+  background: transparent;
   color: var(--label);
   -webkit-font-smoothing: antialiased;
   -webkit-user-select: none;
@@ -75,18 +90,17 @@ textarea,
 }
 
 .app-shell.ant-layout {
-  background: var(--content-bg);
+  background: transparent;
 }
 
-/* 侧边栏：浮在窗口里的圆角玻璃面板，红绿灯按钮在面板左上角 */
+/* 侧边栏：浮起来的液态玻璃面板，红绿灯按钮在面板左上角 */
 .app-sider.ant-layout-sider {
+  position: relative;
   margin: 10px 0 10px 10px;
   height: calc(100% - 20px);
-  border-radius: 20px;
+  border-radius: 22px;
   background: var(--glass-bg);
-  backdrop-filter: blur(40px) saturate(180%);
-  -webkit-backdrop-filter: blur(40px) saturate(180%);
-  box-shadow: var(--glass-shadow), inset 0 1px 0 var(--glass-edge);
+  box-shadow: var(--glass-shadow), var(--glass-inner);
   overflow: hidden;
 }
 
@@ -96,7 +110,28 @@ textarea,
 }
 
 .app-content.ant-layout {
-  background: var(--content-bg);
+  background: var(--window-tint);
+}
+
+/* 玻璃高光边：上亮下暗的渐变描边，模拟玻璃边缘的反光 */
+.app-sider::after,
+.page-header::after,
+.app-sider .ant-menu-item-selected::after,
+.ant-tabs-top > .ant-tabs-nav .ant-tabs-tab-active::after,
+.ant-btn-color-default.ant-btn-variant-outlined::after,
+.ant-modal .ant-modal-content::after,
+.ant-segmented .ant-segmented-thumb::after,
+.ant-segmented .ant-segmented-item-selected::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(165deg, var(--glass-rim-top), transparent 38%, transparent 62%, var(--glass-rim-bottom));
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
 }
 
 .drag-region {
@@ -127,24 +162,42 @@ textarea,
   font-size: 14px;
 }
 
+/* 选中项：一块小玻璃 */
+.app-sider .ant-menu-item-selected {
+  position: relative;
+  background: var(--glass-strong) !important;
+  box-shadow: var(--glass-shadow-small), var(--glass-inner);
+}
+
 /* 页面：大标题 + 工具按钮，和 macOS 窗口工具栏的节奏一致 */
 .page {
   padding: 4px 28px 36px;
   max-width: 1320px;
 }
 
+/* 浮动工具栏：页面标题和按钮在一条玻璃上，内容滚动时从它下面穿过（带折射） */
 .page-header {
+  position: sticky;
+  top: 6px;
+  z-index: 20;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 16px;
-  min-height: 38px;
+  margin: 0 -8px 18px;
+  min-height: 52px;
+  padding: 7px 8px 7px 20px;
+  border-radius: 26px;
+  background: var(--glass-toolbar);
+  -webkit-backdrop-filter: blur(18px) saturate(190%);
+  backdrop-filter: blur(18px) saturate(190%);
+  backdrop-filter: url(#liquid-glass) saturate(190%) brightness(1.04);
+  box-shadow: var(--glass-shadow), var(--glass-inner);
 }
 
 .page-header h2 {
   margin: 0;
-  font-size: 24px;
+  font-size: 22px;
   font-weight: 700;
   letter-spacing: -0.3px;
   color: var(--label);
@@ -162,6 +215,9 @@ textarea,
 /* 内容分组框：实色、大圆角、极淡的边（玻璃只用在导航和控件上） */
 .ant-card {
   border: none !important;
+  background: var(--content-box) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  backdrop-filter: blur(24px) saturate(160%);
   box-shadow: var(--box-shadow) !important;
 }
 
@@ -182,8 +238,16 @@ textarea,
 /* 列表：圆角分组框里的行，只有横向细分隔线 */
 .ant-table-wrapper .ant-table {
   border-radius: 16px;
+  background: var(--content-box);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  backdrop-filter: blur(24px) saturate(160%);
   box-shadow: var(--box-shadow);
   overflow: hidden;
+}
+
+.ant-table-wrapper .ant-table-thead > tr > th,
+.ant-table-wrapper .ant-table-tbody > tr > td {
+  background: transparent;
 }
 
 .ant-table-wrapper .ant-table-thead > tr > th {
@@ -226,17 +290,72 @@ textarea,
 }
 
 .ant-tabs-top > .ant-tabs-nav .ant-tabs-tab-active {
-  background: var(--segment-selected);
-  box-shadow: var(--segment-shadow);
+  position: relative;
+  background: var(--glass-strong);
+  box-shadow: var(--glass-shadow-small), var(--glass-inner);
+}
+
+/* 按钮：玻璃胶囊 */
+.ant-btn-color-default.ant-btn-variant-outlined {
+  position: relative;
+  background: var(--glass-strong) !important;
+  -webkit-backdrop-filter: blur(12px) saturate(180%);
+  backdrop-filter: blur(12px) saturate(180%);
+  box-shadow: var(--glass-shadow-small), var(--glass-inner) !important;
+}
+
+.ant-btn-color-default.ant-btn-variant-outlined:disabled {
+  opacity: 0.55;
+}
+
+.ant-btn-color-primary.ant-btn-variant-solid:not(:disabled) {
+  box-shadow: 0 4px 14px rgba(0, 122, 255, 0.35), inset 0 1px 1px rgba(255, 255, 255, 0.45);
+}
+
+.ant-btn-dangerous.ant-btn-color-dangerous.ant-btn-variant-outlined,
+.ant-btn-color-dangerous.ant-btn-variant-outlined {
+  position: relative;
+  background: var(--glass-strong) !important;
+  box-shadow: var(--glass-shadow-small), var(--glass-inner);
+}
+
+.ant-segmented {
+  box-shadow: var(--glass-inner);
+}
+
+.ant-segmented .ant-segmented-item-selected,
+.ant-segmented .ant-segmented-thumb {
+  position: relative;
+  box-shadow: var(--glass-shadow-small), var(--glass-inner) !important;
+}
+
+.queue-bar,
+.ant-alert {
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  backdrop-filter: blur(24px) saturate(160%);
 }
 
 .ant-tabs-top > .ant-tabs-nav .ant-tabs-ink-bar {
   display: none;
 }
 
+/* 弹窗：玻璃面板 */
 .ant-modal .ant-modal-content {
-  border: 0.5px solid var(--separator);
+  position: relative;
   padding: 22px 24px;
+  background: var(--glass-modal, rgba(255, 255, 255, 0.78)) !important;
+  -webkit-backdrop-filter: blur(40px) saturate(190%);
+  backdrop-filter: blur(40px) saturate(190%);
+  box-shadow: var(--glass-shadow), var(--glass-inner) !important;
+}
+
+:root[data-theme="dark"] .ant-modal .ant-modal-content {
+  --glass-modal: rgba(44, 44, 48, 0.78);
+}
+
+.ant-modal-mask {
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
 }
 
 .ant-steps .ant-steps-item-title {
@@ -328,7 +447,19 @@ textarea,
 }
 
 .embedded .page-header {
+  position: static;
   justify-content: flex-end;
+  margin: 0 0 12px;
+  padding: 0;
+  min-height: 0;
+  background: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.embedded .page-header::after {
+  display: none;
 }
 
 .embedded .page-header h2 {
@@ -342,7 +473,7 @@ textarea,
   flex-wrap: wrap;
   padding: 10px 12px 10px 18px;
   margin-bottom: 14px;
-  background: var(--box-bg);
+  background: var(--content-box);
   box-shadow: var(--box-shadow);
   border-radius: 16px;
 }
@@ -384,4 +515,10 @@ textarea,
 
 ::-webkit-scrollbar-track {
   background: transparent;
+}
+
+/* 滚动边缘效果：内容滚到窗口顶端时渐隐，不在边上被硬切 */
+.app-content > .ant-layout-content {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 18px);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 18px);
 }
