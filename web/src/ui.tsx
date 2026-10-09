@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Segmented, Tooltip } from "antd";
-import { InfoCircleOutlined } from "@ant-design/icons";
+import { InfoCircleOutlined, LeftOutlined } from "@ant-design/icons";
 
 /**
  * macOS「系统设置」样式的基础组件：分组框 + 一行一项（左边标签、右边控件），
@@ -70,18 +70,55 @@ export function Status({ tone, children }: { tone: "ok" | "warn" | "error" | "id
   );
 }
 
+export interface PageTabs {
+  activeKey: string;
+  onChange: (key: string) => void;
+  items: { key: string; label: ReactNode; children: ReactNode }[];
+  /** 打开过的页签保留在内存里（切回来时没保存的输入不会丢）；false 时只渲染当前页签 */
+  keepMounted?: boolean;
+}
+
 /**
- * 标签页：用真正的分段控件做切换（左右内边距一致、滑块平滑移动），
- * 打开过的页签保留在内存里，切回来时输入不会丢。
+ * 统一的页面框架，所有页面都是同样的三层：
+ * 1. 标题栏（浮动玻璃）：只放标题（详情页多一个返回和状态），所有页面位置、高度完全一样；
+ * 2. 页面操作栏：左边是切换 / 搜索，右边是这一页的操作按钮，紧贴在标题栏下面；
+ * 3. 内容。
  */
-export function GlassTabs({ activeKey, onChange, items, keepMounted = true }: { activeKey: string; onChange: (key: string) => void; items: { key: string; label: ReactNode; children: ReactNode }[]; keepMounted?: boolean }) {
+export function Page({ title, back, accessory, tabs, bar, actions, children }: { title: ReactNode; back?: () => void; accessory?: ReactNode; tabs?: PageTabs; bar?: ReactNode; actions?: ReactNode; children?: ReactNode }) {
+  return (
+    <div className="page">
+      <header className="page-header">
+        {back && (
+          <button type="button" className="page-back" onClick={back} aria-label="返回">
+            <LeftOutlined />
+          </button>
+        )}
+        <h2>{title}</h2>
+        {accessory && <div className="page-accessory">{accessory}</div>}
+      </header>
+      {(tabs || bar || actions) && (
+        <div className="page-bar">
+          <div className="page-bar-left">
+            {tabs && <Segmented className="page-tabs" value={tabs.activeKey} onChange={(value) => tabs.onChange(String(value))} options={tabs.items.map((item) => ({ value: item.key, label: item.label }))} />}
+            {bar}
+          </div>
+          {actions && <div className="page-bar-right">{actions}</div>}
+        </div>
+      )}
+      {children}
+      {tabs && <TabPanels tabs={tabs} />}
+    </div>
+  );
+}
+
+function TabPanels({ tabs }: { tabs: PageTabs }) {
+  const { activeKey, items, keepMounted = true } = tabs;
   const [visited, setVisited] = useState<string[]>([activeKey]);
   useEffect(() => {
     setVisited((list) => (list.includes(activeKey) ? list : [...list, activeKey]));
   }, [activeKey]);
   return (
-    <div className="glass-tabs">
-      <Segmented className="glass-tabs-switch" value={activeKey} onChange={(value) => onChange(String(value))} options={items.map((item) => ({ value: item.key, label: item.label }))} />
+    <>
       {items.map((item) =>
         item.key === activeKey || (keepMounted && visited.includes(item.key)) ? (
           <div key={item.key} style={{ display: item.key === activeKey ? undefined : "none" }}>
@@ -89,6 +126,16 @@ export function GlassTabs({ activeKey, onChange, items, keepMounted = true }: { 
           </div>
         ) : null
       )}
+    </>
+  );
+}
+
+/** 内容里的二级切换（比如调用记录里的「生图 / 大模型」）：同样的分段控件，放在内容区里。 */
+export function InlineTabs(tabs: PageTabs) {
+  return (
+    <div>
+      <Segmented className="inline-tabs" value={tabs.activeKey} onChange={(value) => tabs.onChange(String(value))} options={tabs.items.map((item) => ({ value: item.key, label: item.label }))} />
+      <TabPanels tabs={tabs} />
     </div>
   );
 }

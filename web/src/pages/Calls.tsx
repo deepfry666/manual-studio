@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { Card, Col, Row, Select, Space, Statistic, Table, Tag, Typography } from "antd";
-import { GlassTabs } from "../ui";
+import { InlineTabs } from "../ui";
 import { call, formatSeconds, formatTime } from "../api";
 import { useDebounced, useLoader, useSettings, useStudioEvents } from "../hooks";
 import type { CallRow } from "../types";
@@ -86,7 +86,7 @@ export function CallsPage() {
           </Card>
         </Col>
       </Row>
-      <GlassTabs
+      <InlineTabs
         activeKey={tab}
         onChange={setTab}
         items={[

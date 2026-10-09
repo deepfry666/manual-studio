@@ -261,6 +261,8 @@ textarea,
 
 /* 滚动边缘：内容滚到顶端时渐隐 */
 .app-content > .ant-layout-content {
+  /* 有没有滚动条，内容都不左右跳 */
+  scrollbar-gutter: stable;
   -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
   mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
 }
@@ -274,23 +276,22 @@ textarea,
   box-sizing: border-box;
 }
 
-.page.page-narrow {
-  max-width: 820px;
-}
 
 /* 浮动工具栏：标题和按钮在一条玻璃上，内容从下面滚过——先模糊，再在边缘透镜弯折 */
+/* 第 1 层：标题栏。所有页面同一位置、同一高度，只放标题 */
 .page-header {
   position: sticky !important;
   top: 6px;
   z-index: 20;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  margin: 0 -8px 20px;
-  min-height: 54px;
-  padding: 7px 8px 7px 22px;
-  border-radius: 27px;
+  justify-content: flex-start;
+  gap: 12px;
+  margin: 0 -8px 14px;
+  height: 56px;
+  box-sizing: border-box;
+  padding: 0 22px;
+  border-radius: 28px;
   background: var(--toolbar);
   -webkit-backdrop-filter: blur(14px) saturate(190%);
   backdrop-filter: blur(14px) saturate(190%) url(#liquid-glass) brightness(1.04);
@@ -300,10 +301,129 @@ textarea,
 .page-header h2 {
   margin: 0;
   font-size: 22px;
+  line-height: 1;
   font-weight: 700;
   letter-spacing: -0.3px;
   color: var(--label);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.page-back {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  margin-left: -10px;
+  border: none;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--label);
+  background: var(--control);
+  box-shadow: var(--shadow-small), var(--inner);
+  cursor: pointer;
+  transition: transform 0.22s cubic-bezier(0.34, 1.56, 0.64, 1), background 0.15s;
+}
+
+.page-back:hover {
+  background: var(--control-hover);
+}
+
+.page-back:active {
+  transform: scale(0.92);
+}
+
+.page-accessory {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+.page-accessory .ant-tag {
+  margin: 0;
+}
+
+/* 第 2 层：页面操作栏。左边切换 / 搜索，右边这一页的操作，紧贴在标题栏下面 */
+.page-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 40px;
+  margin: 0 0 20px;
+}
+
+.page-bar-left,
+.page-bar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.page-bar-right {
+  justify-content: flex-end;
+  margin-left: auto;
+}
+
+.page-tabs .ant-segmented-item-label,
+.inline-tabs .ant-segmented-item-label {
+  min-height: 32px;
+  line-height: 32px;
+  padding: 0 18px;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.inline-tabs {
+  margin-bottom: 14px;
+}
+
+/* 浮动提示（不挤占页面布局） */
+.floating-notice {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 50;
+  max-width: 420px;
+}
+
+.floating-notice .ant-alert {
+  background: var(--popover) !important;
+  -webkit-backdrop-filter: blur(40px) saturate(190%);
+  backdrop-filter: blur(40px) saturate(190%);
+  box-shadow: var(--shadow), var(--inner);
+}
+
+/* 侧边面板（抽屉）：和侧栏一样，浮起来的圆角玻璃 */
+.ant-drawer .ant-drawer-content-wrapper {
+  margin: 10px;
+  height: calc(100% - 20px) !important;
+  border-radius: 24px;
+  overflow: hidden;
+  box-shadow: var(--shadow) !important;
+}
+
+.ant-drawer .ant-drawer-content,
+.ant-drawer .ant-drawer-section {
+  position: relative;
+  border-radius: 24px;
+  background: var(--popover) !important;
+  -webkit-backdrop-filter: blur(40px) saturate(190%);
+  backdrop-filter: blur(40px) saturate(190%);
+  box-shadow: var(--inner);
+}
+
+.ant-drawer .ant-drawer-header {
+  border-bottom: 0.5px solid var(--separator);
+}
+
+.ant-drawer .ant-drawer-mask {
+  background: rgba(0, 0, 0, 0.12);
 }
 
 /* ---------- 内容面板（分组框、卡片、表格） ---------- */
@@ -669,7 +789,8 @@ textarea,
 }
 
 .embedded .page-header {
-  position: static;
+  position: static !important;
+  height: auto;
   justify-content: flex-end;
   margin: 0 0 12px;
   padding: 0;
@@ -804,7 +925,7 @@ textarea,
 /* 宽屏时分组框并排两栏，不让一行拉得太长 */
 .mac-columns {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(440px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
   gap: 0 22px;
   align-items: start;
 }
@@ -829,14 +950,4 @@ textarea,
   background: var(--control-hover) !important;
 }
 
-.glass-tabs-switch {
-  margin-bottom: 18px;
-}
 
-.glass-tabs-switch .ant-segmented-item-label {
-  min-height: 32px;
-  line-height: 32px;
-  padding: 0 18px;
-  font-size: 14px;
-  font-weight: 500;
-}

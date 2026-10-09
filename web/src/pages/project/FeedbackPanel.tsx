@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Alert, App, Button, Card, Checkbox, Collapse, Input, List, Modal, Space, Tag, Typography } from "antd";
-import { DeleteOutlined, EditOutlined, MessageOutlined } from "@ant-design/icons";
+import { DeleteOutlined, EditOutlined } from "@ant-design/icons";
 import { call, formatTime } from "../../api";
 import type { FeedbackAction, FeedbackPlan, ProjectDetail } from "../../types";
 
@@ -50,22 +50,10 @@ export function FeedbackPanel({ data, running, onChanged }: { data: ProjectDetai
   };
 
   return (
-    <Card
-      size="small"
-      style={{ marginBottom: 16 }}
-      title={
-        <Space>
-          <MessageOutlined />
-          修改意见
-          {pending.length > 0 && <Tag color="blue">{pending.length} 条待处理</Tag>}
-        </Space>
-      }
-      extra={
-        <Button type="primary" size="small" disabled={!pending.length || running || !canAnalyze} loading={analyzing} onClick={analyze}>
-          整理意见并统一修改{pending.length ? `（${pending.length} 条）` : ""}
-        </Button>
-      }
-    >
+    <div className="feedback-panel">
+      <div className="mac-section-foot" style={{ padding: "0 0 10px" }}>
+        看到问题就记一条，先不执行；攒够了点下面的按钮，软件判断要改哪几张图、哪几段文字，确认后一次改完。
+      </div>
       <Space.Compact style={{ width: "100%" }}>
         <Input.TextArea
           value={text}
@@ -123,7 +111,10 @@ export function FeedbackPanel({ data, running, onChanged }: { data: ProjectDetai
         />
       )}
       <PlanModal dir={dir} plan={plan} pendingTexts={new Map(pending.map((item, index) => [item.id, { n: index + 1, text: item.text }]))} onClose={() => setPlan(null)} onApplied={() => { setPlan(null); onChanged(); }} />
-    </Card>
+      <Button block type="primary" style={{ marginTop: 16 }} disabled={!pending.length || running || !canAnalyze} loading={analyzing} onClick={analyze}>
+        整理意见并统一修改{pending.length ? `（${pending.length} 条）` : ""}
+      </Button>
+    </div>
   );
 }
 

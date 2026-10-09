@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { App, Button, Input, InputNumber, Select, Space, Switch, Table, Tag } from "antd";
 import { call, formatTime } from "../api";
 import { GRADE_LABEL, navigate, useLoader, useSettings } from "../hooks";
-import { GlassTabs, PathText, Row, Section, Status } from "../ui";
+import { Page, PathText, Row, Section, Status } from "../ui";
 import type { FontStatus, Settings } from "../types";
 
 const TXT_LABELS: Record<string, string> = {
@@ -24,22 +24,20 @@ const PLATFORMS = [
 export function SettingsPage({ tab }: { tab?: string }) {
   const active = ["general", "code", "pdf", "import", "txt"].includes(tab || "") ? (tab as string) : "general";
   return (
-    <div className="page page-narrow">
-      <div className="page-header">
-        <h2>设置</h2>
-      </div>
-      <GlassTabs
-        activeKey={active}
-        onChange={(key) => navigate("settings", key)}
-        items={[
+    <Page
+      title="设置"
+      tabs={{
+        activeKey: active,
+        onChange: (key) => navigate("settings", key),
+        items: [
           { key: "general", label: "通用", children: <GeneralSettings /> },
           { key: "code", label: "代码来源", children: <CodeSourceSettings /> },
           { key: "pdf", label: "PDF 与字体", children: <PdfSettings /> },
           { key: "txt", label: "TXT 字段", children: <TxtSettings /> },
           { key: "import", label: "导入历史项目", children: <ImportPanel /> },
-        ]}
-      />
-    </div>
+        ],
+      }}
+    />
   );
 }
 
@@ -65,7 +63,7 @@ function GeneralSettings() {
   if (!data) return null;
   const pipeline = data.pipeline;
   return (
-    <>
+    <div className="mac-columns">
       <Section title="位置">
         <Row label="项目存放位置" info="新建的项目都放在这里，和以前 skill 用的是同一个文件夹。">
           <PathText path={data.workspaceDir} />
@@ -110,7 +108,7 @@ function GeneralSettings() {
           </Button>
         </Row>
       </Section>
-    </>
+    </div>
   );
 }
 
@@ -133,7 +131,7 @@ function CodeSourceSettings() {
   }, [source.path, JSON.stringify(source.extensions)]);
   if (!data) return null;
   return (
-    <>
+    <div className="mac-columns">
       <Section title="代码来源" footer="所有项目共用。项目第一次生成交付包时会记下当时的来源，之后修改不影响已完成的项目。">
         <Row label="源码" info="文件夹或单个文件。按文件路径排序后原样排版，不改写、不生成。不设置时交付包只有说明书 3 个文件。">
           <PathText path={source.path} />
@@ -167,7 +165,7 @@ function CodeSourceSettings() {
           {info.warnings.length > 0 && <Row label="提醒" hint={info.warnings.join("；")} />}
         </Section>
       )}
-    </>
+    </div>
   );
 }
 
@@ -178,7 +176,7 @@ function PdfSettings() {
   const [installing, setInstalling] = useState(false);
   const docs = fonts.data?.docs || {};
   return (
-    <>
+    <div className="mac-columns">
       <Section
         title="字体"
         extra={
@@ -236,7 +234,7 @@ function PdfSettings() {
           </Button>
         </Row>
       </Section>
-    </>
+    </div>
   );
 }
 
@@ -247,19 +245,19 @@ function TxtSettings() {
     if (data) setDraft(data.txtFields);
   }, [data]);
   if (!data) return null;
+  const field = (key: string) => (
+    <Row key={key} label={TXT_LABELS[key]}>
+      <Input value={draft[key] ?? ""} onChange={(event) => setDraft({ ...draft, [key]: event.target.value })} onBlur={() => draft[key] !== data.txtFields[key] && save({ txtFields: { [key]: draft[key] } })} />
+    </Row>
+  );
   return (
-    <Section title="TXT 环境字段" footer="默认值和旧 skill 模板一致。【源程序量】按代码来源的实际行数统计；有代码来源时【编程语言】自动判断。">
-      {Object.entries(TXT_LABELS).map(([key, label]) => (
-        <Row key={key} label={label}>
-          <Input
-            value={draft[key] ?? ""}
-            onChange={(event) => setDraft({ ...draft, [key]: event.target.value })}
-            onBlur={() => draft[key] !== data.txtFields[key] && save({ txtFields: { [key]: draft[key] } })}
-            style={{ width: 340 }}
-          />
-        </Row>
-      ))}
-    </Section>
+    <>
+      <div className="mac-columns">
+        <Section title="开发环境">{["devHardware", "devOs", "devTools", "language"].map(field)}</Section>
+        <Section title="运行环境">{["runHardware", "runPlatform", "runSupport"].map(field)}</Section>
+      </div>
+      <div className="mac-section-foot">默认值和旧 skill 模板一致。【源程序量】按代码来源的实际行数统计；有代码来源时【编程语言】自动判断。</div>
+    </>
   );
 }
 

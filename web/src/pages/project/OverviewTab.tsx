@@ -1,9 +1,18 @@
 import { useEffect, useState } from "react";
-import { App, Col, Empty, Input, InputNumber, Row as GridRow, Segmented, Select, Switch, Table } from "antd";
+import { App, Col, Empty, Input, InputNumber, Row as GridRow, Segmented, Select, Steps, Switch, Table } from "antd";
 import { call, detectVersion, formatDuration, formatTime } from "../../api";
 import { STEP_LABELS, STEP_ORDER } from "../../hooks";
 import { Row, Section } from "../../ui";
-import type { ProjectDetail } from "../../types";
+import type { ProjectDetail, StepStatus } from "../../types";
+
+const STEP_STATUS: Record<StepStatus, "wait" | "process" | "finish" | "error"> = {
+  pending: "wait",
+  running: "process",
+  done: "finish",
+  skipped: "finish",
+  failed: "error",
+  review: "process",
+};
 
 const PLATFORMS = [
   { value: "iPhone 16 Pro Max / iOS 26", label: "iPhone 16 Pro Max / iOS 26" },
@@ -34,7 +43,24 @@ export function OverviewTab({ data, running, onChanged }: { data: ProjectDetail;
   const disabled = running || Boolean(data.state.readOnly);
   const version = detectVersion(request.softwareName);
 
+  const state = data.state;
   return (
+    <>
+    <Section title="进度">
+      <div style={{ padding: "16px 18px 10px" }}>
+        <Steps
+          size="small"
+          items={STEP_ORDER.map((step) => {
+            const stepState = state.steps[step] || { status: "pending" };
+            return {
+              title: STEP_LABELS[step],
+              status: STEP_STATUS[stepState.status] || "wait",
+              description: stepState.status === "skipped" ? "不需要" : stepState.status === "review" ? "待确认" : undefined,
+            };
+          })}
+        />
+      </div>
+    </Section>
     <GridRow gutter={20}>
       <Col span={13}>
         <Section title="项目设置" footer="改截图数、重点功能或平台，下次运行会重新规划并重新生图。">
@@ -96,6 +122,7 @@ export function OverviewTab({ data, running, onChanged }: { data: ProjectDetail;
         </Section>
       </Col>
     </GridRow>
+    </>
   );
 }
 

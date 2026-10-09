@@ -98,8 +98,9 @@ export function App() {
       <Layout className="app-content">
         <div className="drag-region" />
         <Content style={{ overflow: "auto" }}>
+          {page}
           {unknown.length > 0 && (
-            <div style={{ padding: "0 28px" }}>
+            <div className="floating-notice">
               <Alert
                 type="warning"
                 showIcon
@@ -118,7 +119,7 @@ export function App() {
               />
             </div>
           )}
-          {page}
+
         </Content>
       </Layout>
     </Layout>

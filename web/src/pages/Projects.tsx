@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import { Alert, App, Button, Input, InputNumber, Modal, Progress, Radio, Select, Space, Table, Tag, Tooltip, Typography } from "antd";
-import { CaretRightOutlined, ExportOutlined, FilePdfOutlined, FolderOpenOutlined, PauseOutlined, PlusOutlined } from "@ant-design/icons";
+import { Alert, App, Button, Dropdown, Input, InputNumber, Modal, Progress, Radio, Select, Space, Table, Tag, Tooltip, Typography } from "antd";
+import { CaretRightOutlined, EllipsisOutlined, ExportOutlined, FolderOpenOutlined, PauseOutlined } from "@ant-design/icons";
 import { call, formatDuration, formatTime } from "../api";
 import { GRADE_LABEL, PROJECT_STATUS, STEP_LABELS, STEP_ORDER, navigate, useDebounced, useLoader, useSettings, useStudioEvents } from "../hooks";
 import type { BatchItem, ExportItem, ProjectSummary } from "../types";
+import { Page } from "../ui";
 
 const QUEUE_LABEL: Record<string, { label: string; color: string }> = {
   queued: { label: "排队中", color: "default" },
@@ -116,10 +117,62 @@ export function ProjectsPage() {
   };
 
   return (
-    <div className="page">
-      <div className="page-header">
-        <h2>历史项目</h2>
-        <Space>
+    <Page
+      title="历史项目"
+      bar={
+        <>
+          <Input.Search allowClear placeholder="按软件名搜索" style={{ width: 240 }} onChange={(event) => setQuery(event.target.value)} />
+          <Select
+            value={statusFilter}
+            onChange={setStatusFilter}
+            style={{ width: 150 }}
+            options={[
+              { value: "all", label: "全部状态" },
+              { value: "running", label: "运行中" },
+              { value: "queued", label: "排队中" },
+              { value: "done", label: "已完成" },
+              { value: "waiting", label: "等待确认" },
+              { value: "needs-attention", label: "需要处理" },
+              { value: "idle", label: "未完成" },
+              { value: "font", label: "PDF 字体不对" },
+              { value: "imported", label: "导入的历史项目" },
+              { value: "readonly", label: "只读" },
+            ]}
+          />
+        </>
+      }
+      actions={
+        selected.length > 0 ? (
+          <>
+            <span className="muted">已选 {selected.length} 个</span>
+            <Button icon={<CaretRightOutlined />} onClick={start}>
+              开始处理
+            </Button>
+            <Button icon={<ExportOutlined />} onClick={() => setExportDirs(selected)}>
+              导出…
+            </Button>
+            <Dropdown
+              trigger={["click"]}
+              menu={{
+                items: [
+                  { key: "pdf", label: "重新导出 PDF" },
+                  ...(selectedRows.some((project) => project.queue && project.queue.status !== "running") ? [{ key: "dequeue", label: "移出队列" }] : []),
+                  { key: "clear", label: "取消选择" },
+                ],
+                onClick: async ({ key }) => {
+                  if (key === "pdf") reexportPdf(selected);
+                  if (key === "dequeue") {
+                    await call("batchRemoveProjects", selected);
+                    message.success("已移出队列");
+                  }
+                  if (key === "clear") setSelected([]);
+                },
+              }}
+            >
+              <Button icon={<EllipsisOutlined />} />
+            </Dropdown>
+          </>
+        ) : (
           <Button
             icon={<ExportOutlined />}
             onClick={() => {
@@ -130,11 +183,9 @@ export function ProjectsPage() {
           >
             导出全部已完成
           </Button>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => navigate("new")}>
-            新建项目
-          </Button>
-        </Space>
-      </div>
+        )
+      }
+    >
       <SetupHint />
       <QueueBar queue={queue.data} concurrency={settings.data?.settings.pipeline.batchConcurrency || 3} onConcurrency={async (value) => {
         await call("updateSettings", { pipeline: { batchConcurrency: value } });
@@ -143,53 +194,6 @@ export function ProjectsPage() {
       {pdfJob && (
         <Alert style={{ marginBottom: 12 }} type="info" showIcon message={`正在重新导出 PDF：${pdfJob.index + 1}/${pdfJob.total}（${byDir.get(pdfJob.current || "")?.name || ""}）`} />
       )}
-      <Space style={{ marginBottom: 12 }} wrap>
-        <Input.Search allowClear placeholder="按软件名搜索" style={{ width: 240 }} onChange={(event) => setQuery(event.target.value)} />
-        <Select
-          value={statusFilter}
-          onChange={setStatusFilter}
-          style={{ width: 160 }}
-          options={[
-            { value: "all", label: "全部状态" },
-            { value: "running", label: "运行中" },
-            { value: "queued", label: "排队中" },
-            { value: "done", label: "已完成" },
-            { value: "waiting", label: "等待确认" },
-            { value: "needs-attention", label: "需要处理" },
-            { value: "idle", label: "未完成" },
-            { value: "font", label: "PDF 字体不对" },
-            { value: "imported", label: "导入的历史项目" },
-            { value: "readonly", label: "只读" },
-          ]}
-        />
-        {selected.length > 0 && (
-          <>
-            <Typography.Text>已选 {selected.length} 个：</Typography.Text>
-            <Button type="primary" ghost icon={<CaretRightOutlined />} onClick={start}>
-              开始处理
-            </Button>
-            <Button icon={<ExportOutlined />} onClick={() => setExportDirs(selected)}>
-              导出…
-            </Button>
-            <Button icon={<FilePdfOutlined />} onClick={() => reexportPdf(selected)}>
-              重新导出 PDF
-            </Button>
-            {selectedRows.some((project) => project.queue && project.queue.status !== "running") && (
-              <Button
-                onClick={async () => {
-                  await call("batchRemoveProjects", selected);
-                  message.success("已移出队列");
-                }}
-              >
-                移出队列
-              </Button>
-            )}
-            <Button type="text" onClick={() => setSelected([])}>
-              取消选择
-            </Button>
-          </>
-        )}
-      </Space>
       <Table<ProjectSummary>
         rowKey="dir"
         loading={projects.loading}
@@ -204,7 +208,7 @@ export function ProjectsPage() {
           },
           style: { cursor: "pointer" },
         })}
-        locale={{ emptyText: "还没有项目。点右上角「新建项目」；以前用 skill 做过的项目可以在「设置 → 导入历史项目」里接进来。" }}
+        locale={{ emptyText: "还没有项目。在左边「新建项目」里创建；以前用 skill 做过的项目可以在「设置 → 导入历史项目」里接进来。" }}
         columns={[
           {
             title: "软件名",
@@ -295,7 +299,7 @@ export function ProjectsPage() {
         ]}
       />
       <ExportModal dirs={exportDirs} lastDir={settings.data?.settings.export?.lastDir || ""} onClose={() => setExportDirs(null)} onDone={() => { setExportDirs(null); setSelected([]); settings.reload(); }} />
-    </div>
+    </Page>
   );
 }
 

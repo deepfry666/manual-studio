@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { App, Button, Input, InputNumber, Segmented, Select, Space, Switch } from "antd";
 import { call, detectVersion } from "../api";
 import { navigate, useSettings } from "../hooks";
-import { PathText, Row, Section } from "../ui";
+import { Page, PathText, Row, Section } from "../ui";
 
 const PLATFORMS = [
   { value: "iPhone 16 Pro Max / iOS 26", label: "iPhone 16 Pro Max / iOS 26" },
@@ -14,20 +14,22 @@ export function NewProjectPage() {
   const settings = useSettings();
   const data = settings.data?.settings;
   return (
-    <div className="page page-narrow">
-      <div className="page-header">
-        <h2>新建项目</h2>
+    <Page
+      title="新建项目"
+      bar={
         <Segmented
+          className="page-tabs"
           value={mode}
           onChange={(value) => setMode(value as "single" | "batch")}
           options={[
-            { value: "single", label: "单个" },
-            { value: "batch", label: "批量" },
+            { value: "single", label: "单个项目" },
+            { value: "batch", label: "批量新建" },
           ]}
         />
-      </div>
+      }
+    >
       {data && (mode === "single" ? <SingleForm defaultScreens={data.pipeline.defaultScreenCount} defaultPlatform={data.pipeline.platform} codePath={data.codeSource?.path} /> : <BatchForm defaultPlatform={data.pipeline.platform} concurrency={data.pipeline.batchConcurrency} codePath={data.codeSource?.path} />)}
-    </div>
+    </Page>
   );
 }
 
@@ -70,7 +72,8 @@ function SingleForm({ defaultScreens, defaultPlatform, codePath }: { defaultScre
 
   return (
     <>
-      <Section>
+      <div className="mac-columns">
+      <Section title="基本信息">
         <Row label="软件名" hint={name.trim() ? (version ? `识别到版本号 ${version}` : "没有版本号") : "含版本号，按原样填写"} info="只用于文件名、文档标题和页眉，截图里不会出现软件名和版本号。">
           <Input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：云伴日程 V1.0" autoFocus style={{ width: 340 }} onPressEnter={() => submit(true)} />
         </Row>
@@ -92,7 +95,7 @@ function SingleForm({ defaultScreens, defaultPlatform, codePath }: { defaultScre
           <Input.TextArea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="可选，目标用户、风格偏好等" autoSize={{ minRows: 1, maxRows: 4 }} style={{ width: 340 }} />
         </Row>
       </Section>
-      <Section>
+      <Section title="生成选项">
         <Row label="平台">
           <Select value={platform} onChange={setPlatform} options={PLATFORMS} style={{ width: 260 }} />
         </Row>
@@ -101,6 +104,7 @@ function SingleForm({ defaultScreens, defaultPlatform, codePath }: { defaultScre
         </Row>
         <CodeSourceRow path={codePath} />
       </Section>
+      </div>
       <Space style={{ width: "100%", justifyContent: "flex-end" }}>
         <Button loading={busy} onClick={() => submit(false)}>
           只创建
@@ -155,6 +159,7 @@ function BatchForm({ defaultPlatform, concurrency, codePath }: { defaultPlatform
 
   return (
     <>
+      <div className="mac-columns">
       <Section
         title={`软件名（每行一个，已填 ${count} 个）`}
         extra={
@@ -175,7 +180,7 @@ function BatchForm({ defaultPlatform, concurrency, codePath }: { defaultPlatform
           <Input.TextArea variant="borderless" rows={10} value={text} onChange={(event) => setText(event.target.value)} placeholder={"云伴日程 V1.0\n快记账本 V1.0,7,预算提醒\n掌上违章助手 V1.0"} />
         </div>
       </Section>
-      <Section>
+      <Section title="生成选项">
         <Row label="截图数" hint="没在列表里写截图数的项目">
           <Segmented
             value={autoCount ? "auto" : "fixed"}
@@ -198,6 +203,7 @@ function BatchForm({ defaultPlatform, concurrency, codePath }: { defaultPlatform
           <Switch checked={startNow} onChange={setStartNow} />
         </Row>
       </Section>
+      </div>
       <Space style={{ width: "100%", justifyContent: "flex-end" }}>
         <Button type="primary" loading={busy} disabled={!count} onClick={submit}>
           创建 {count || ""} 个项目

@@ -1,5 +1,5 @@
 import { navigate } from "../hooks";
-import { GlassTabs } from "../ui";
+import { Page } from "../ui";
 import { ProvidersPage } from "./Providers";
 import { LlmPage } from "./Llm";
 import { CallsPage } from "./Calls";
@@ -8,20 +8,18 @@ import { CallsPage } from "./Calls";
 export function ModelsPage({ tab }: { tab?: string }) {
   const active = ["providers", "llm", "calls"].includes(tab || "") ? (tab as string) : "providers";
   return (
-    <div className="page">
-      <div className="page-header">
-        <h2>模型与线路</h2>
-      </div>
-      <GlassTabs
-        activeKey={active}
-        onChange={(key) => navigate("models", key)}
-        keepMounted={false}
-        items={[
+    <Page
+      title="模型与线路"
+      tabs={{
+        activeKey: active,
+        onChange: (key) => navigate("models", key),
+        keepMounted: false,
+        items: [
           { key: "providers", label: "生图线路", children: <div className="embedded"><ProvidersPage /></div> },
           { key: "llm", label: "大模型", children: <div className="embedded"><LlmPage /></div> },
           { key: "calls", label: "调用记录", children: <div className="embedded"><CallsPage /></div> },
-        ]}
-      />
-    </div>
+        ],
+      }}
+    />
   );
 }
