@@ -18,7 +18,9 @@ const APIMART_ASYNC_MAPPING = {
   submit: {
     method: "POST",
     path: "/images/generations",
-    body: { model: "$model", prompt: "$prompt", size: "$size", resolution: "1K", n: 1 },
+    // 必须带 quality（默认 low）：不带的话 APIMart 按默认的高质量计费，单价约贵 17 倍。
+    // 字段与旧 skill 实测便宜的请求保持一致：model / prompt / size / quality / n。
+    body: { model: "$model", prompt: "$prompt", size: "$size", quality: "$quality", n: 1 },
   },
   response: { taskId: "$.data[0].task_id", images: "$.data[*]" },
   polling: {

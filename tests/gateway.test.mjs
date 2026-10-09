@@ -333,3 +333,29 @@ test("补发线样本包含被补发取消的慢请求，避免补发线越算�
   await log.append({ providerId: "p", ok: false, kind: "aborted", outcome: "canceled", durationMs: 5_000 });
   assert.deepEqual(log.recentSuccessSeconds("p").sort((a, b) => a - b), [10, 10, 10, 10, 10, 90]);
 });
+
+test("计费参数：每种线路都把质量设置（默认 low）发出去，APIMart 不再发 resolution", async (t) => {
+  const bodies = [];
+  const syncRelay = await startMockRelay((index, body) => (bodies.push({ kind: "sync", body }), {}));
+  const asyncRelay = await startMockRelay((index, body) => (bodies.push({ kind: "async", body }), { mode: "async", readyAfterMs: 50 }));
+  t.after(() => Promise.all([syncRelay.close(), asyncRelay.close()]));
+  const { PROVIDER_PRESETS } = await import("../core/gateway/presets.mjs");
+  const original = PROVIDER_PRESETS["apimart-async"].mapping.polling.intervalMs;
+  PROVIDER_PRESETS["apimart-async"].mapping.polling.intervalMs = 50;
+  t.after(() => (PROVIDER_PRESETS["apimart-async"].mapping.polling.intervalMs = original));
+  const ctx = await setup(
+    [
+      { id: "apimart", preset: "apimart-async", baseUrl: asyncRelay.baseUrl, model: "gpt-image-2.5-flare", overrides: { mapping: null } },
+      { id: "cpa", baseUrl: syncRelay.baseUrl },
+    ],
+    { hedge: { enabled: false } }
+  );
+  await ctx.gateway.generate(ctx.request("screen-01"));
+  ctx.settings.providers.reverse();
+  await ctx.gateway.generate(ctx.request("screen-02"));
+  const apimart = bodies.find((item) => item.kind === "async").body;
+  assert.equal(apimart.quality, "low");
+  assert.equal(apimart.resolution, undefined);
+  assert.deepEqual(Object.keys(apimart).sort(), ["model", "n", "prompt", "quality", "size"]);
+  assert.equal(bodies.find((item) => item.kind === "sync").body.quality, "low");
+});
