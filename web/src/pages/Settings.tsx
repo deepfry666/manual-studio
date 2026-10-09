@@ -89,7 +89,7 @@ function GeneralSettings() {
         <Row label="批量同时处理" info="比如 50 个项目设 3：3 个同时跑，跑完一个补一个。生图总并发由生图线路控制，调大这里不会把线路挤爆。">
           <InputNumber min={1} max={8} value={pipeline.batchConcurrency} onChange={(value) => value && save({ pipeline: { batchConcurrency: value } })} addonAfter="个项目" style={{ width: 130 }} />
         </Row>
-        <Row label="默认屏数">
+        <Row label="默认截图数" hint="新建项目时默认用这个屏数">
           <InputNumber min={2} max={15} value={pipeline.defaultScreenCount} onChange={(value) => value && save({ pipeline: { defaultScreenCount: value } })} addonAfter="屏" style={{ width: 110 }} />
         </Row>
         <Row label="默认平台">

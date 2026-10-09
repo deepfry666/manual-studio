@@ -28,7 +28,7 @@ export function NewProjectPage() {
         />
       }
     >
-      {data && (mode === "single" ? <SingleForm defaultScreens={data.pipeline.defaultScreenCount} defaultPlatform={data.pipeline.platform} codePath={data.codeSource?.path} /> : <BatchForm defaultPlatform={data.pipeline.platform} concurrency={data.pipeline.batchConcurrency} codePath={data.codeSource?.path} />)}
+      {data && (mode === "single" ? <SingleForm defaultScreens={data.pipeline.defaultScreenCount} defaultPlatform={data.pipeline.platform} codePath={data.codeSource?.path} /> : <BatchForm defaultScreens={data.pipeline.defaultScreenCount} defaultPlatform={data.pipeline.platform} concurrency={data.pipeline.batchConcurrency} codePath={data.codeSource?.path} />)}
     </Page>
   );
 }
@@ -47,7 +47,8 @@ function CodeSourceRow({ path }: { path?: string }) {
 function SingleForm({ defaultScreens, defaultPlatform, codePath }: { defaultScreens: number; defaultPlatform: string; codePath?: string }) {
   const { message } = App.useApp();
   const [name, setName] = useState("");
-  const [autoCount, setAutoCount] = useState(true);
+  // 默认固定屏数（设置里的「默认截图数」，默认 7），也可以改成让大模型按功能决定
+  const [autoCount, setAutoCount] = useState(false);
   const [screenCount, setScreenCount] = useState(defaultScreens);
   const [emphasis, setEmphasis] = useState("");
   const [notes, setNotes] = useState("");
@@ -82,8 +83,8 @@ function SingleForm({ defaultScreens, defaultPlatform, codePath }: { defaultScre
             value={autoCount ? "auto" : "fixed"}
             onChange={(value) => setAutoCount(value === "auto")}
             options={[
+              { value: "fixed", label: "固定" },
               { value: "auto", label: "按功能决定" },
-              { value: "fixed", label: "指定" },
             ]}
           />
           {!autoCount && <InputNumber min={2} max={15} value={screenCount} onChange={(value) => setScreenCount(Number(value) || defaultScreens)} addonAfter="屏" style={{ width: 100 }} />}
@@ -117,11 +118,11 @@ function SingleForm({ defaultScreens, defaultPlatform, codePath }: { defaultScre
   );
 }
 
-function BatchForm({ defaultPlatform, concurrency, codePath }: { defaultPlatform: string; concurrency: number; codePath?: string }) {
+function BatchForm({ defaultScreens, defaultPlatform, concurrency, codePath }: { defaultScreens: number; defaultPlatform: string; concurrency: number; codePath?: string }) {
   const { message, modal } = App.useApp();
   const [text, setText] = useState("");
-  const [autoCount, setAutoCount] = useState(true);
-  const [screenCount, setScreenCount] = useState(7);
+  const [autoCount, setAutoCount] = useState(false);
+  const [screenCount, setScreenCount] = useState(defaultScreens);
   const [platform, setPlatform] = useState(defaultPlatform);
   const [wantDesign, setWantDesign] = useState(false);
   const [startNow, setStartNow] = useState(true);
@@ -186,11 +187,11 @@ function BatchForm({ defaultPlatform, concurrency, codePath }: { defaultPlatform
             value={autoCount ? "auto" : "fixed"}
             onChange={(value) => setAutoCount(value === "auto")}
             options={[
+              { value: "fixed", label: "固定" },
               { value: "auto", label: "按功能决定" },
-              { value: "fixed", label: "指定" },
             ]}
           />
-          {!autoCount && <InputNumber min={2} max={15} value={screenCount} onChange={(value) => setScreenCount(Number(value) || 7)} addonAfter="屏" style={{ width: 100 }} />}
+          {!autoCount && <InputNumber min={2} max={15} value={screenCount} onChange={(value) => setScreenCount(Number(value) || defaultScreens)} addonAfter="屏" style={{ width: 100 }} />}
         </Row>
         <Row label="平台">
           <Select value={platform} onChange={setPlatform} options={PLATFORMS} style={{ width: 260 }} />

@@ -70,8 +70,8 @@ export function OverviewTab({ data, running, onChanged }: { data: ProjectDetail;
               value={request.screenCount ? "fixed" : "auto"}
               onChange={(value) => update({ screenCount: value === "auto" ? null : request.screenCount || 7 })}
               options={[
+                { value: "fixed", label: "固定" },
                 { value: "auto", label: "按功能决定" },
-                { value: "fixed", label: "指定" },
               ]}
             />
             {request.screenCount ? <InputNumber disabled={disabled} min={2} max={15} value={request.screenCount} onChange={(value) => value && update({ screenCount: value })} addonAfter="屏" style={{ width: 100 }} /> : null}
