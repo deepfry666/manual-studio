@@ -210,13 +210,15 @@ export function ProjectsPage() {
             title: "软件名",
             dataIndex: "name",
             render: (name: string, record) => (
-              <Space direction="vertical" size={0}>
+              <Space direction="vertical" size={2}>
                 <Typography.Text strong>{name}</Typography.Text>
-                <Space size={4} wrap>
-                  {record.origin === "imported" && record.grade && <Tag color={GRADE_LABEL[record.grade]?.color}>历史 · {GRADE_LABEL[record.grade]?.label}</Tag>}
-                  {record.feedbackPending > 0 && <Tag color="blue">{record.feedbackPending} 条修改意见待处理</Tag>}
-                  {record.pdfFontProblem && <Tag color="orange">PDF 字体不对</Tag>}
-                </Space>
+                {((record.origin === "imported" && record.grade) || record.feedbackPending > 0 || record.pdfFontProblem) && (
+                  <Space size={4} wrap>
+                    {record.origin === "imported" && record.grade && <Tag color={GRADE_LABEL[record.grade]?.color}>历史 · {GRADE_LABEL[record.grade]?.label}</Tag>}
+                    {record.feedbackPending > 0 && <Tag color="blue">{record.feedbackPending} 条修改意见待处理</Tag>}
+                    {record.pdfFontProblem && <Tag color="orange">PDF 字体不对</Tag>}
+                  </Space>
+                )}
               </Space>
             ),
           },

@@ -60,16 +60,14 @@ export function App() {
   }
 
   return (
-    <Layout style={{ height: "100%" }}>
-      <Sider width={208} className="app-sider" theme="light" style={{ borderRight: "1px solid #eceef2" }}>
-        <div className="drag-region" />
-        <div className="brand">
-          软件指南生成器
-          <small>截图 · 文案 · 交付包</small>
-        </div>
-        <Menu mode="inline" selectedKeys={[selected]} items={MENU} onClick={({ key }) => navigate(key)} style={{ borderInlineEnd: "none", padding: "0 8px" }} />
+    <Layout className="app-shell" style={{ height: "100%" }}>
+      <Sider width={212} className="app-sider" theme="light">
+        {/* 顶部留给红绿灯按钮，可拖动窗口 */}
+        <div className="sider-top" />
+        <Menu mode="inline" selectedKeys={[selected]} items={MENU} onClick={({ key }) => navigate(key)} style={{ borderInlineEnd: "none" }} />
+        <div className="sider-footer">软件指南生成器</div>
       </Sider>
-      <Layout>
+      <Layout className="app-content">
         <div className="drag-region" />
         <Content style={{ overflow: "auto" }}>
           {unknown.length > 0 && (

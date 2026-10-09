@@ -1,3 +1,52 @@
+/* macOS 原生风格：系统色变量，浅色 / 深色跟随系统（data-theme 由 theme.ts 设置） */
+:root,
+:root[data-theme="light"] {
+  --label: rgba(0, 0, 0, 0.88);
+  --secondary: rgba(60, 60, 67, 0.62);
+  --tertiary: rgba(60, 60, 67, 0.3);
+  --separator: rgba(60, 60, 67, 0.13);
+  --content-bg: #f2f2f5;
+  --box-bg: #ffffff;
+  --fill: rgba(120, 120, 128, 0.12);
+  --selection: rgba(120, 120, 128, 0.16);
+  --accent: #007aff;
+  --green: #34c759;
+  --orange: #ff9500;
+  --red: #ff3b30;
+  --segment-selected: #ffffff;
+  --segment-shadow: 0 2px 6px rgba(0, 0, 0, 0.1), 0 0 0 0.5px rgba(0, 0, 0, 0.05);
+  --thumb-bg: #e9e9ee;
+  /* 侧边栏：偏实色的着色玻璃（macOS 27 降低了透明度） */
+  --glass-bg: rgba(255, 255, 255, 0.72);
+  --glass-edge: rgba(255, 255, 255, 0.9);
+  --glass-shadow: 0 8px 30px rgba(0, 0, 0, 0.07), 0 0 0 0.5px rgba(0, 0, 0, 0.07);
+  --box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 0 0 0.5px rgba(0, 0, 0, 0.05);
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --label: rgba(255, 255, 255, 0.92);
+  --secondary: rgba(235, 235, 245, 0.6);
+  --tertiary: rgba(235, 235, 245, 0.3);
+  --separator: rgba(84, 84, 88, 0.6);
+  --content-bg: #161618;
+  --box-bg: #242426;
+  --fill: rgba(120, 120, 128, 0.24);
+  --selection: rgba(120, 120, 128, 0.32);
+  --accent: #0a84ff;
+  --green: #30d158;
+  --orange: #ff9f0a;
+  --red: #ff453a;
+  --segment-selected: #636366;
+  --segment-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+  --thumb-bg: #1f1f21;
+  --glass-bg: rgba(44, 44, 46, 0.78);
+  --glass-edge: rgba(255, 255, 255, 0.08);
+  --glass-shadow: 0 8px 30px rgba(0, 0, 0, 0.4), 0 0 0 0.5px rgba(255, 255, 255, 0.06);
+  --box-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.06);
+  color-scheme: dark;
+}
+
 html,
 body,
 #root,
@@ -7,13 +56,38 @@ body,
 }
 
 body {
-  background: #f5f6f8;
+  background: var(--content-bg);
+  color: var(--label);
   -webkit-font-smoothing: antialiased;
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: default;
 }
 
-.drag-region {
-  -webkit-app-region: drag;
-  height: 28px;
+input,
+textarea,
+.ant-typography,
+.mono,
+.log-list,
+.selectable {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.app-shell.ant-layout {
+  background: var(--content-bg);
+}
+
+/* 侧边栏：浮在窗口里的圆角玻璃面板，红绿灯按钮在面板左上角 */
+.app-sider.ant-layout-sider {
+  margin: 10px 0 10px 10px;
+  height: calc(100% - 20px);
+  border-radius: 20px;
+  background: var(--glass-bg);
+  backdrop-filter: blur(40px) saturate(180%);
+  -webkit-backdrop-filter: blur(40px) saturate(180%);
+  box-shadow: var(--glass-shadow), inset 0 1px 0 var(--glass-edge);
+  overflow: hidden;
 }
 
 .app-sider .ant-layout-sider-children {
@@ -21,24 +95,42 @@ body {
   flex-direction: column;
 }
 
-.brand {
-  padding: 8px 20px 16px;
-  font-weight: 600;
-  font-size: 15px;
-  color: #1f2937;
+.app-content.ant-layout {
+  background: var(--content-bg);
 }
 
-.brand small {
-  display: block;
-  font-weight: 400;
-  color: #8a94a6;
+.drag-region {
+  -webkit-app-region: drag;
+  height: 28px;
+  flex-shrink: 0;
+}
+
+.sider-top {
+  -webkit-app-region: drag;
+  height: 50px;
+  flex-shrink: 0;
+}
+
+.sider-footer {
+  margin-top: auto;
+  padding: 12px 22px 18px;
   font-size: 12px;
-  margin-top: 2px;
+  color: var(--tertiary);
 }
 
+.app-sider .ant-menu-item .anticon {
+  color: var(--accent);
+}
+
+.app-sider .ant-menu-item {
+  font-weight: 500;
+  font-size: 14px;
+}
+
+/* 页面：大标题 + 工具按钮，和 macOS 窗口工具栏的节奏一致 */
 .page {
-  padding: 20px 28px 40px;
-  max-width: 1500px;
+  padding: 4px 28px 36px;
+  max-width: 1320px;
 }
 
 .page-header {
@@ -47,21 +139,115 @@ body {
   justify-content: space-between;
   gap: 16px;
   margin-bottom: 16px;
+  min-height: 38px;
 }
 
 .page-header h2 {
   margin: 0;
-  font-size: 20px;
-  font-weight: 600;
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+  color: var(--label);
 }
 
 .muted {
-  color: #8a94a6;
+  color: var(--secondary);
 }
 
 .mono {
   font-family: "SF Mono", Menlo, monospace;
-  font-size: 12px;
+  font-size: 12.5px;
+}
+
+/* 内容分组框：实色、大圆角、极淡的边（玻璃只用在导航和控件上） */
+.ant-card {
+  border: none !important;
+  box-shadow: var(--box-shadow) !important;
+}
+
+.ant-card .ant-card-head {
+  border-bottom: 0.5px solid var(--separator);
+  font-weight: 600;
+}
+
+.ant-card-type-inner {
+  background: var(--fill) !important;
+  box-shadow: none !important;
+}
+
+.ant-card-type-inner .ant-card-head {
+  background: transparent;
+}
+
+/* 列表：圆角分组框里的行，只有横向细分隔线 */
+.ant-table-wrapper .ant-table {
+  border-radius: 16px;
+  box-shadow: var(--box-shadow);
+  overflow: hidden;
+}
+
+.ant-table-wrapper .ant-table-thead > tr > th {
+  font-size: 13px;
+  font-weight: 500;
+  border-bottom: 0.5px solid var(--separator) !important;
+}
+
+.ant-table-wrapper .ant-table-tbody > tr > td {
+  border-bottom: 0.5px solid var(--separator);
+}
+
+.ant-table-wrapper .ant-table-tbody > tr:last-child > td {
+  border-bottom: none;
+}
+
+/* 标签页做成 macOS 的分段控件（segmented control） */
+.ant-tabs-top > .ant-tabs-nav::before {
+  display: none;
+}
+
+.ant-tabs-top > .ant-tabs-nav .ant-tabs-nav-wrap {
+  flex: none;
+}
+
+.ant-tabs-top > .ant-tabs-nav .ant-tabs-nav-list {
+  background: var(--fill);
+  border-radius: 999px;
+  padding: 3px;
+  gap: 2px;
+}
+
+.ant-tabs-top > .ant-tabs-nav .ant-tabs-tab {
+  margin: 0 !important;
+  padding: 5px 16px !important;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 500;
+  transition: background 0.15s;
+}
+
+.ant-tabs-top > .ant-tabs-nav .ant-tabs-tab-active {
+  background: var(--segment-selected);
+  box-shadow: var(--segment-shadow);
+}
+
+.ant-tabs-top > .ant-tabs-nav .ant-tabs-ink-bar {
+  display: none;
+}
+
+.ant-modal .ant-modal-content {
+  border: 0.5px solid var(--separator);
+  padding: 22px 24px;
+}
+
+.ant-steps .ant-steps-item-title {
+  font-weight: 500;
+}
+
+.ant-tag {
+  border: none;
+  font-weight: 500;
+  border-radius: 999px;
+  padding-inline: 9px;
 }
 
 .screen-grid {
@@ -75,8 +261,8 @@ body {
   width: 100%;
   aspect-ratio: 864 / 1824;
   object-fit: contain;
-  background: #eef1f5;
-  border-bottom: 1px solid #edf0f3;
+  background: var(--thumb-bg);
+  border-bottom: 0.5px solid var(--separator);
   display: block;
 }
 
@@ -84,16 +270,16 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #9aa3b2;
+  color: var(--tertiary);
   font-size: 13px;
 }
 
 .char-count-ok {
-  color: #16a34a;
+  color: var(--green);
 }
 
 .char-count-bad {
-  color: #dc2626;
+  color: var(--red);
 }
 
 .log-list {
@@ -104,11 +290,15 @@ body {
 }
 
 .log-list .error {
-  color: #dc2626;
+  color: var(--red);
 }
 
 .log-list .warn {
-  color: #d97706;
+  color: var(--orange);
+}
+
+.warn-text {
+  color: var(--orange);
 }
 
 .stat-number {
@@ -121,7 +311,7 @@ body {
   object-fit: cover;
   object-position: top;
   border-radius: 6px;
-  border: 1px solid #e5e7eb;
+  border: 0.5px solid var(--separator);
 }
 
 .preview-img {
@@ -150,11 +340,11 @@ body {
   align-items: center;
   gap: 16px;
   flex-wrap: wrap;
-  padding: 10px 14px;
-  margin-bottom: 12px;
-  background: #fff;
-  border: 1px solid #eceef2;
-  border-radius: 8px;
+  padding: 10px 12px 10px 18px;
+  margin-bottom: 14px;
+  background: var(--box-bg);
+  box-shadow: var(--box-shadow);
+  border-radius: 16px;
 }
 
 .live-screens {
@@ -164,12 +354,11 @@ body {
 }
 
 .live-screen {
-  border: 1px solid #eceef2;
-  border-radius: 6px;
-  padding: 6px 10px;
-  font-size: 12px;
+  border-radius: 12px;
+  padding: 8px 12px;
+  font-size: 13px;
   line-height: 1.6;
-  background: #fafbfc;
+  background: var(--fill);
 }
 
 .live-screen b {
@@ -178,4 +367,21 @@ body {
 
 .feedback-list .ant-list-item {
   padding: 6px 0;
+}
+
+/* macOS 风格的细滚动条 */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--tertiary);
+  border-radius: 10px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
 }

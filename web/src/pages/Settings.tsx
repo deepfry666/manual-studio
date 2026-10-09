@@ -222,7 +222,7 @@ function CodeSourceSettings() {
                 ))}
                 {info.fileCount > info.files.length && <div>…</div>}
                 {info.warnings.map((warning) => (
-                  <div key={warning} style={{ color: "#d97706" }}>
+                  <div key={warning} className="warn-text">
                     {warning}
                   </div>
                 ))}
