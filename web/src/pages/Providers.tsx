@@ -279,10 +279,14 @@ function StrategyCard({ bundle, onSaved }: { bundle: SettingsBundle; onSaved: ()
         <MacRow label="开启补发">
           <Switch checked={hedge.enabled} onChange={(value) => save({ hedge: { enabled: value } })} />
         </MacRow>
-        <MacRow label="补发线" info="取这条线路最近 50 次耗时的百分位，限制在上下限之间。">
-          <InputNumber min={50} max={99} value={hedge.percentile} onChange={(value) => value && save({ hedge: { percentile: value } })} addonAfter="%" style={{ width: 96 }} />
-          <InputNumber min={5} max={600} value={hedge.minSec} onChange={(value) => value && save({ hedge: { minSec: value } })} addonBefore="最少" addonAfter="秒" style={{ width: 150 }} />
-          <InputNumber min={10} max={900} value={hedge.maxSec} onChange={(value) => value && save({ hedge: { maxSec: value } })} addonBefore="最多" addonAfter="秒" style={{ width: 150 }} />
+        <MacRow label="补发线百分位" info="取这条线路最近 50 次耗时的这个百分位作为补发线，再限制在下面的上下限之间。">
+          <InputNumber min={50} max={99} value={hedge.percentile} onChange={(value) => value && save({ hedge: { percentile: value } })} addonAfter="%" style={{ width: 110 }} />
+        </MacRow>
+        <MacRow label="补发线最少">
+          <InputNumber min={5} max={600} value={hedge.minSec} onChange={(value) => value && save({ hedge: { minSec: value } })} addonAfter="秒" style={{ width: 110 }} />
+        </MacRow>
+        <MacRow label="补发线最多">
+          <InputNumber min={10} max={900} value={hedge.maxSec} onChange={(value) => value && save({ hedge: { maxSec: value } })} addonAfter="秒" style={{ width: 110 }} />
         </MacRow>
         <MacRow label="每次运行最多补发" hint="0 等于关闭">
           <InputNumber min={0} max={100} value={hedge.maxPerBatch} onChange={(value) => value !== null && save({ hedge: { maxPerBatch: value } })} addonAfter="张" style={{ width: 110 }} />
