@@ -8,7 +8,7 @@ import { CallsPage } from "./Calls";
 export function ModelsPage({ tab }: { tab?: string }) {
   const active = ["providers", "llm", "calls"].includes(tab || "") ? (tab as string) : "providers";
   return (
-    <div className="page">
+    <div className="page" style={{ maxWidth: 1120 }}>
       <div className="page-header">
         <h2>模型与线路</h2>
       </div>

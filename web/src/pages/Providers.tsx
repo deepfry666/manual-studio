@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { Alert, App, Button, Card, Col, Divider, Form, Input, InputNumber, Modal, Radio, Row, Select, Space, Switch, Table, Tag, Tooltip, Typography } from "antd";
+import { Alert, App, Button, Col, Form, Input, InputNumber, Modal, Radio, Row, Select, Space, Switch, Table, Tag, Tooltip, Typography } from "antd";
 import { ArrowDownOutlined, ArrowUpOutlined, DeleteOutlined, EditOutlined, ExperimentOutlined, ImportOutlined, PlusOutlined, ThunderboltOutlined } from "@ant-design/icons";
 import { call, formatSeconds } from "../api";
 import { useDebounced, useLoader, useSettings, useStudioEvents } from "../hooks";
+import { Row as MacRow, Section } from "../ui";
 import type { ImageProvider, ProviderStatus, SettingsBundle } from "../types";
 
 export function ProvidersPage() {
@@ -81,9 +82,7 @@ export function ProvidersPage() {
         </Space>
       </div>
 
-      <Typography.Paragraph className="muted">
-        每张截图会按下面的顺序选第一条可用线路，所有屏同时发出。某张图超过「补发线」还没回来，会同时向另一条线路再发一次，先出图的用；失败会自动换下一条线路。
-      </Typography.Paragraph>
+      
 
       <Table<ImageProvider>
         rowKey="id"
@@ -238,93 +237,60 @@ function ProbeReport({ report }: { report: Record<string, unknown> }) {
   );
 }
 
+/** 生图策略：系统设置样式，改了就保存。 */
 function StrategyCard({ bundle, onSaved }: { bundle: SettingsBundle; onSaved: () => void }) {
   const { message } = App.useApp();
-  const [form] = Form.useForm();
-  useEffect(() => {
-    form.setFieldsValue(bundle.settings.image);
-  }, [bundle, form]);
+  const image = bundle.settings.image;
+  const [size, setSize] = useState(image.targetSize);
+  useEffect(() => setSize(image.targetSize), [image.targetSize]);
+  const save = async (patch: Record<string, unknown>) => {
+    try {
+      await call("updateSettings", { image: patch });
+      onSaved();
+    } catch (error) {
+      message.error((error as Error).message);
+    }
+  };
+  const hedge = image.hedge;
   return (
-    <Card
-      title="生图策略"
-      size="small"
-      style={{ marginTop: 20 }}
-      extra={
-        <Button
-          type="primary"
-          size="small"
-          onClick={async () => {
-            await call("updateSettings", { image: await form.validateFields() });
-            message.success("已保存");
-            onSaved();
-          }}
-        >
-          保存
-        </Button>
-      }
-    >
-      <Form form={form} layout="vertical">
-        <Row gutter={16}>
-          <Col span={6}>
-            <Form.Item name="targetSize" label="目标尺寸" extra="只收比例的线路会自动换成最接近的比例">
-              <Input />
-            </Form.Item>
-          </Col>
-          <Col span={6}>
-            <Form.Item name="quality" label="质量">
-              <Select options={[{ value: "low", label: "low（默认）" }, { value: "medium", label: "medium" }, { value: "high", label: "high" }]} />
-            </Form.Item>
-          </Col>
-          <Col span={6}>
-            <Form.Item name="globalConcurrency" label="全局并发上限">
-              <InputNumber min={1} max={50} />
-            </Form.Item>
-          </Col>
-          <Col span={6}>
-            <Form.Item name="maxAttemptsPerScreen" label="每屏最多尝试次数">
-              <InputNumber min={1} max={10} />
-            </Form.Item>
-          </Col>
-        </Row>
-        <Divider style={{ margin: "4px 0 16px" }}>超时补发</Divider>
-        <Row gutter={16}>
-          <Col span={4}>
-            <Form.Item name={["hedge", "enabled"]} label="开启补发" valuePropName="checked">
-              <Switch />
-            </Form.Item>
-          </Col>
-          <Col span={5}>
-            <Form.Item name={["hedge", "percentile"]} label="补发线百分位" extra="最近 50 次成功耗时的第几百分位">
-              <InputNumber min={50} max={99} addonAfter="%" />
-            </Form.Item>
-          </Col>
-          <Col span={5}>
-            <Form.Item name={["hedge", "minSec"]} label="补发线下限">
-              <InputNumber min={5} max={600} addonAfter="秒" />
-            </Form.Item>
-          </Col>
-          <Col span={5}>
-            <Form.Item name={["hedge", "maxSec"]} label="补发线上限">
-              <InputNumber min={10} max={900} addonAfter="秒" />
-            </Form.Item>
-          </Col>
-          <Col span={5}>
-            <Form.Item name={["hedge", "maxPerBatch"]} label="每次运行最多补发" extra="设为 0 等于关闭">
-              <InputNumber min={0} max={100} addonAfter="张" />
-            </Form.Item>
-          </Col>
-        </Row>
-        <Form.Item name={["hedge", "allowCrossModel"]} valuePropName="checked" label="允许补发到不同模型（画风可能和其他屏不一致）" extra="关闭时只补发到「画风组」相同的线路。比如把 CPA 的 gpt-image-2.5 和 APIMart 的 gpt-image-2.5-flare 设成同一个画风组。">
-          <Switch />
-        </Form.Item>
-        <Form.Item name="spillover" valuePropName="checked" label="首选线路满载时，分流到同画风组还有空位的线路" extra="比如 CPA 并发 4 已满，第 5 张图直接发给同组的 APIMart，而不是在 CPA 后面排队。关闭则严格按顺序排队。">
-          <Switch />
-        </Form.Item>
-        <Form.Item name="gateRegenerateLimit" label="截图验收不通过时，每屏最多重生几次">
-          <InputNumber min={1} max={6} />
-        </Form.Item>
-      </Form>
-    </Card>
+    <div style={{ marginTop: 24 }}>
+      <Section title="生图">
+        <MacRow label="目标尺寸" info="只收比例的线路会自动换成最接近的比例（864x1824 → 1:2）。">
+          <Input value={size} onChange={(event) => setSize(event.target.value)} onBlur={() => size !== image.targetSize && save({ targetSize: size })} style={{ width: 130 }} />
+        </MacRow>
+        <MacRow label="质量">
+          <Select value={image.quality} onChange={(value) => save({ quality: value })} options={[{ value: "low", label: "low" }, { value: "medium", label: "medium" }, { value: "high", label: "high" }]} style={{ width: 130 }} />
+        </MacRow>
+        <MacRow label="全局并发上限" info="所有项目加起来同时生成的图片数。">
+          <InputNumber min={1} max={50} value={image.globalConcurrency} onChange={(value) => value && save({ globalConcurrency: value })} addonAfter="张" style={{ width: 110 }} />
+        </MacRow>
+        <MacRow label="每屏最多尝试">
+          <InputNumber min={1} max={10} value={image.maxAttemptsPerScreen} onChange={(value) => value && save({ maxAttemptsPerScreen: value })} addonAfter="次" style={{ width: 110 }} />
+        </MacRow>
+        <MacRow label="验收不通过时最多重生">
+          <InputNumber min={1} max={6} value={image.gateRegenerateLimit} onChange={(value) => value && save({ gateRegenerateLimit: value })} addonAfter="次" style={{ width: 110 }} />
+        </MacRow>
+        <MacRow label="满载时分流" info="首选线路并发满了，直接发给同一画风组还有空位的线路，不排队。关闭则严格按顺序排队。">
+          <Switch checked={image.spillover} onChange={(value) => save({ spillover: value })} />
+        </MacRow>
+      </Section>
+      <Section title="超时补发" footer="某张图超过补发线还没回来，向另一条线路再发一次，先出图的用。">
+        <MacRow label="开启补发">
+          <Switch checked={hedge.enabled} onChange={(value) => save({ hedge: { enabled: value } })} />
+        </MacRow>
+        <MacRow label="补发线" info="取这条线路最近 50 次耗时的百分位，限制在上下限之间。">
+          <InputNumber min={50} max={99} value={hedge.percentile} onChange={(value) => value && save({ hedge: { percentile: value } })} addonAfter="%" style={{ width: 96 }} />
+          <InputNumber min={5} max={600} value={hedge.minSec} onChange={(value) => value && save({ hedge: { minSec: value } })} addonBefore="最少" addonAfter="秒" style={{ width: 150 }} />
+          <InputNumber min={10} max={900} value={hedge.maxSec} onChange={(value) => value && save({ hedge: { maxSec: value } })} addonBefore="最多" addonAfter="秒" style={{ width: 150 }} />
+        </MacRow>
+        <MacRow label="每次运行最多补发" hint="0 等于关闭">
+          <InputNumber min={0} max={100} value={hedge.maxPerBatch} onChange={(value) => value !== null && save({ hedge: { maxPerBatch: value } })} addonAfter="张" style={{ width: 110 }} />
+        </MacRow>
+        <MacRow label="允许补发到不同模型" info="关闭时只补发到「画风组」相同的线路，画风和其他屏保持一致。">
+          <Switch checked={hedge.allowCrossModel} onChange={(value) => save({ hedge: { allowCrossModel: value } })} />
+        </MacRow>
+      </Section>
+    </div>
   );
 }
 

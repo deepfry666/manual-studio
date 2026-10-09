@@ -58,9 +58,7 @@ export function PlanTab({ data, running, onChanged }: { data: ProjectDetail; run
         </Descriptions>
       </Card>
       {data.state.origin === "imported" && (
-        <Typography.Paragraph className="muted" style={{ margin: 0 }}>
-          历史项目的规划是旧 skill 的格式。在这里编辑某一屏，会按新格式重新生成这一屏的提示词并重新生图；如果只想微调画面，建议在「截图」里直接改这一屏的提示词。
-        </Typography.Paragraph>
+        <span className="muted">历史项目：编辑某一屏会按新格式重写它的提示词并重新生图。</span>
       )}
       <Table<PlanScreen>
         rowKey="id"

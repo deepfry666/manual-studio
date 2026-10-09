@@ -1,139 +1,101 @@
-import { useEffect, useMemo } from "react";
-import { App, Button, Card, Col, Form, Input, InputNumber, Row, Select, Switch, Table, Typography, Empty } from "antd";
+import { useEffect, useState } from "react";
+import { App, Col, Empty, Input, InputNumber, Row as GridRow, Segmented, Select, Switch, Table } from "antd";
 import { call, detectVersion, formatDuration, formatTime } from "../../api";
 import { STEP_LABELS, STEP_ORDER } from "../../hooks";
+import { Row, Section } from "../../ui";
 import type { ProjectDetail } from "../../types";
 
-export function OverviewTab({ data, activity, running, onChanged }: { data: ProjectDetail; activity: string[]; running: boolean; onChanged: () => void }) {
-  const { message } = App.useApp();
-  const [form] = Form.useForm();
-  const request = data.state.request;
-  const requestKey = useMemo(() => JSON.stringify(request), [request]);
-  useEffect(() => {
-    form.setFieldsValue({
-      autoCount: !request.screenCount,
-      screenCount: request.screenCount || 7,
-      emphasis: request.emphasis,
-      notes: request.notes,
-      platform: request.platform || undefined,
-      wantDesign: request.wantDesign,
-      extraBrandTokens: request.extraBrandTokens || [],
-      compileDate: request.compileDate,
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data.dir, requestKey, form]);
+const PLATFORMS = [
+  { value: "iPhone 16 Pro Max / iOS 26", label: "iPhone 16 Pro Max / iOS 26" },
+  { value: "Android 手机（原生 Android 界面）", label: "Android 手机" },
+];
 
-  const save = async () => {
-    const values = await form.validateFields();
+/** 项目设置：改了就保存，下次运行只重做受影响的步骤。 */
+export function OverviewTab({ data, running, onChanged }: { data: ProjectDetail; activity: string[]; running: boolean; onChanged: () => void }) {
+  const { message } = App.useApp();
+  const request = data.state.request;
+  const [emphasis, setEmphasis] = useState(request.emphasis || "");
+  const [notes, setNotes] = useState(request.notes || "");
+  const [compileDate, setCompileDate] = useState(request.compileDate || "");
+  useEffect(() => {
+    setEmphasis(request.emphasis || "");
+    setNotes(request.notes || "");
+    setCompileDate(request.compileDate || "");
+  }, [request.emphasis, request.notes, request.compileDate]);
+
+  const update = async (patch: Record<string, unknown>) => {
     try {
-      await call("action", "updateRequest", data.dir, {
-        screenCount: values.autoCount ? null : values.screenCount,
-        emphasis: values.emphasis || "",
-        notes: values.notes || "",
-        platform: values.platform || "",
-        wantDesign: values.wantDesign,
-        extraBrandTokens: values.extraBrandTokens || [],
-        compileDate: values.compileDate || "",
-      });
-      message.success("已保存。改动会在下次运行时生效，只重做受影响的步骤。");
+      await call("action", "updateRequest", data.dir, patch);
       onChanged();
     } catch (error) {
       message.error((error as Error).message);
     }
   };
-
   const disabled = running || Boolean(data.state.readOnly);
+  const version = detectVersion(request.softwareName);
+
   return (
-    <Row gutter={16}>
+    <GridRow gutter={20}>
       <Col span={13}>
-        <Card title="项目设置" size="small" extra={<Button type="primary" size="small" disabled={disabled} onClick={save}>保存</Button>}>
-          <Form form={form} layout="vertical" disabled={disabled}>
-            <Row gutter={12}>
-              <Col span={12}>
-                <Form.Item name="autoCount" label="截图数" valuePropName="checked" extra="改屏数、重点功能或平台会重新规划并重新生图">
-                  <Switch checkedChildren="自动" unCheckedChildren="指定" />
-                </Form.Item>
-              </Col>
-              <Col span={12}>
-                <Form.Item noStyle shouldUpdate={(prev, next) => prev.autoCount !== next.autoCount}>
-                  {({ getFieldValue }) =>
-                    !getFieldValue("autoCount") && (
-                      <Form.Item name="screenCount" label="屏数">
-                        <InputNumber min={2} max={15} />
-                      </Form.Item>
-                    )
-                  }
-                </Form.Item>
-              </Col>
-            </Row>
-            <Form.Item name="emphasis" label="重点功能">
-              <Input />
-            </Form.Item>
-            <Form.Item name="notes" label="补充说明">
-              <Input.TextArea rows={2} />
-            </Form.Item>
-            <Form.Item name="platform" label="平台">
-              <Select allowClear placeholder="使用设置里的默认平台" options={[{ value: "iPhone 16 Pro Max / iOS 26", label: "iPhone 16 Pro Max / iOS 26" }, { value: "Android 手机（原生 Android 界面）", label: "Android 手机" }]} />
-            </Form.Item>
-            <Form.Item
-              name="extraBrandTokens"
-              label="额外禁词（截图里也不能出现的词）"
-              extra={`默认已禁止：完整软件名、去掉版本号的名字${detectVersion(request.softwareName) ? `、版本号 ${detectVersion(request.softwareName)}` : ""}。可以再加品牌简称等。`}
-            >
-              <Select mode="tags" placeholder="输入后回车" />
-            </Form.Item>
-            <Row gutter={12}>
-              <Col span={12}>
-                <Form.Item name="compileDate" label="编制时间（留空用构建当天）">
-                  <Input placeholder="例如 2026年10月3日" />
-                </Form.Item>
-              </Col>
-              <Col span={12}>
-                <Form.Item name="wantDesign" label="附加设计说明章节" valuePropName="checked">
-                  <Switch />
-                </Form.Item>
-              </Col>
-            </Row>
-          </Form>
-        </Card>
+        <Section title="项目设置" footer="改截图数、重点功能或平台，下次运行会重新规划并重新生图。">
+          <Row label="截图数">
+            <Segmented
+              disabled={disabled}
+              value={request.screenCount ? "fixed" : "auto"}
+              onChange={(value) => update({ screenCount: value === "auto" ? null : request.screenCount || 7 })}
+              options={[
+                { value: "auto", label: "按功能决定" },
+                { value: "fixed", label: "指定" },
+              ]}
+            />
+            {request.screenCount ? <InputNumber disabled={disabled} min={2} max={15} value={request.screenCount} onChange={(value) => value && update({ screenCount: value })} addonAfter="屏" style={{ width: 100 }} /> : null}
+          </Row>
+          <Row label="重点功能">
+            <Input disabled={disabled} value={emphasis} onChange={(event) => setEmphasis(event.target.value)} onBlur={() => emphasis !== (request.emphasis || "") && update({ emphasis })} style={{ width: 300 }} />
+          </Row>
+          <Row label="补充说明">
+            <Input.TextArea disabled={disabled} value={notes} autoSize={{ minRows: 1, maxRows: 5 }} onChange={(event) => setNotes(event.target.value)} onBlur={() => notes !== (request.notes || "") && update({ notes })} style={{ width: 300 }} />
+          </Row>
+          <Row label="平台">
+            <Select disabled={disabled} allowClear placeholder="用设置里的默认平台" value={request.platform || undefined} options={PLATFORMS} onChange={(value) => update({ platform: value || "" })} style={{ width: 260 }} />
+          </Row>
+        </Section>
+        <Section>
+          <Row label="设计说明章节">
+            <Switch disabled={disabled} checked={Boolean(request.wantDesign)} onChange={(value) => update({ wantDesign: value })} />
+          </Row>
+          <Row label="额外禁词" info={`截图里也不能出现的词。默认已禁止：完整软件名、去掉版本号的名字${version ? `、版本号 ${version}` : ""}。`}>
+            <Select disabled={disabled} mode="tags" value={request.extraBrandTokens || []} onChange={(value: string[]) => update({ extraBrandTokens: value })} placeholder="输入后回车" style={{ width: 300 }} />
+          </Row>
+          <Row label="编制时间" hint="留空用生成当天">
+            <Input disabled={disabled} value={compileDate} placeholder="例如 2026年10月3日" onChange={(event) => setCompileDate(event.target.value)} onBlur={() => compileDate !== (request.compileDate || "") && update({ compileDate })} style={{ width: 200 }} />
+          </Row>
+        </Section>
         <TimingCard data={data} />
         {data.state.warnings.length > 0 && (
-          <Card title="提醒" size="small" style={{ marginTop: 16 }}>
-            <ul style={{ margin: 0, paddingLeft: 18 }}>
-              {data.state.warnings.map((warning) => (
-                <li key={warning}>{warning}</li>
-              ))}
-            </ul>
-          </Card>
+          <Section title="提醒">
+            {data.state.warnings.map((warning) => (
+              <Row key={warning} label={<span style={{ fontWeight: 400 }}>{warning}</span>} />
+            ))}
+          </Section>
         )}
       </Col>
       <Col span={11}>
-        <Card title="实时生图动态" size="small">
-          {activity.length ? (
-            <div className="log-list mono">
-              {activity.map((line, index) => (
-                <div key={index}>{line}</div>
-              ))}
-            </div>
-          ) : (
-            <Typography.Text className="muted">运行时这里会显示每张图走了哪条线路、有没有补发。</Typography.Text>
-          )}
-        </Card>
-        <Card title="项目日志" size="small" style={{ marginTop: 16 }}>
+        <Section title="日志">
           {data.state.log.length ? (
-            <div className="log-list">
+            <div className="log-list" style={{ padding: "10px 16px", maxHeight: 560 }}>
               {[...data.state.log].reverse().map((entry, index) => (
                 <div key={index} className={entry.level}>
-                  <span className="muted mono">{formatTime(entry.at)}</span> {entry.message}
+                  <span className="muted">{formatTime(entry.at)}</span> {entry.message}
                 </div>
               ))}
             </div>
           ) : (
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有日志" />
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有日志" style={{ padding: 16 }} />
           )}
-        </Card>
+        </Section>
       </Col>
-    </Row>
+    </GridRow>
   );
 }
 
@@ -143,13 +105,11 @@ function TimingCard({ data }: { data: ProjectDetail }) {
   if (!timing?.runs?.length) return null;
   const runs = [...timing.runs].reverse();
   return (
-    <Card
+    <Section
       title="用时"
-      size="small"
-      style={{ marginTop: 16 }}
       extra={
-        <span>
-          {timing.completedMs ? <>完成用时 <b>{formatDuration(timing.completedMs)}</b>，</> : null}累计 {formatDuration(timing.totalMs)}
+        <span style={{ fontWeight: 400 }}>
+          {timing.completedMs ? <>完成 <b>{formatDuration(timing.completedMs)}</b> · </> : null}累计 {formatDuration(timing.totalMs)}
         </span>
       }
     >
@@ -173,6 +133,6 @@ function TimingCard({ data }: { data: ProjectDetail }) {
           },
         ]}
       />
-    </Card>
+    </Section>
   );
 }

@@ -99,17 +99,35 @@ export function App() {
 }
 
 /**
- * 液态玻璃的折射：用低频噪声做位移，让玻璃后面滚过的内容产生轻微的「液体」扭曲。
- * 只给浮动工具栏这类控件层用（backdrop-filter: url(#liquid-glass)），内容本身不扭曲。
+ * 液态玻璃的折射：像一块透镜，中间基本不变形，越靠近边缘弯折越厉害（边缘位移图），
+ * 再叠一点低频起伏让它有「液体」感。只给浮动工具栏这类控件层用，内容本身不扭曲。
  */
+const LENS_MAP = `data:image/svg+xml,${encodeURIComponent(
+  `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" preserveAspectRatio="none">
+    <defs>
+      <linearGradient id="x" x1="0" x2="1" y1="0" y2="0">
+        <stop offset="0" stop-color="#ff0000"/><stop offset="0.16" stop-color="#800000"/>
+        <stop offset="0.84" stop-color="#800000"/><stop offset="1" stop-color="#000000"/>
+      </linearGradient>
+      <linearGradient id="y" x1="0" x2="0" y1="0" y2="1">
+        <stop offset="0" stop-color="#00ff00"/><stop offset="0.3" stop-color="#008000"/>
+        <stop offset="0.7" stop-color="#008000"/><stop offset="1" stop-color="#000000"/>
+      </linearGradient>
+    </defs>
+    <rect width="200" height="200" fill="url(#x)"/>
+    <rect width="200" height="200" fill="url(#y)" style="mix-blend-mode:screen"/>
+  </svg>`
+)}`;
+
 function LiquidGlassFilter() {
   return (
     <svg width="0" height="0" style={{ position: "absolute" }} aria-hidden="true">
-      <filter id="liquid-glass" x="0%" y="0%" width="100%" height="100%" colorInterpolationFilters="sRGB">
-        <feTurbulence type="fractalNoise" baseFrequency="0.006 0.011" numOctaves="2" seed="7" result="noise" />
-        <feGaussianBlur in="noise" stdDeviation="3" result="softNoise" />
-        <feDisplacementMap in="SourceGraphic" in2="softNoise" scale="26" xChannelSelector="R" yChannelSelector="G" result="refracted" />
-        <feGaussianBlur in="refracted" stdDeviation="7" />
+      <filter id="liquid-glass" x="0%" y="0%" width="100%" height="100%" colorInterpolationFilters="sRGB" primitiveUnits="objectBoundingBox">
+        <feImage href={LENS_MAP} x="0" y="0" width="1" height="1" preserveAspectRatio="none" result="lens" />
+        <feDisplacementMap in="SourceGraphic" in2="lens" scale="0.09" xChannelSelector="R" yChannelSelector="G" result="bent" />
+        <feTurbulence type="fractalNoise" baseFrequency="0.004 0.012" numOctaves="1" seed="4" result="noise" />
+        <feDisplacementMap in="bent" in2="noise" scale="0.012" xChannelSelector="R" yChannelSelector="G" result="liquid" />
+        <feGaussianBlur in="liquid" stdDeviation="0.0025" />
       </filter>
     </svg>
   );

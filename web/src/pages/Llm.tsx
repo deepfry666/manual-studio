@@ -21,9 +21,7 @@ export function LlmPage() {
           添加厂商
         </Button>
       </div>
-      <Typography.Paragraph className="muted">
-        所有厂商都按 OpenAI 兼容接口调用。每个步骤可以选不同厂商和模型；「截图验收」需要能看图的模型（DeepSeek 目前没有看图模型，可以用 OpenAI 或智谱的 GLM-V 系列）。不配看图模型时，截图改为人工逐张确认。
-      </Typography.Paragraph>
+      
       <Table<LlmVendor>
         rowKey="id"
         size="middle"

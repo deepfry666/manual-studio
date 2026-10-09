@@ -430,9 +430,7 @@ function ExportModal({ dirs, lastDir, onClose, onDone }: { dirs: string[] | null
       confirmLoading={busy}
       onOk={run}
     >
-      <Typography.Paragraph className="muted">
-        每个项目导出成一个文件夹，文件夹名就是项目名，里面是它的交付文件（有代码文档 5 个，没有 3 个）。{multiple ? "选了多个项目时，这些文件夹都放进同一个总文件夹。" : ""}只复制，不改动原项目。
-      </Typography.Paragraph>
+      <Typography.Paragraph className="muted">每个项目一个文件夹（名字是项目名）{multiple ? "，多选时都放进同一个总文件夹" : ""}。只复制，不改动原项目。</Typography.Paragraph>
       <Space.Compact style={{ width: "100%", marginBottom: 12 }}>
         <Input value={target} readOnly placeholder="选择导出到哪里" />
         <Button

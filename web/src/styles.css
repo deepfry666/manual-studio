@@ -17,11 +17,11 @@
   --segment-shadow: 0 2px 6px rgba(0, 0, 0, 0.1), 0 0 0 0.5px rgba(0, 0, 0, 0.05);
   --thumb-bg: #e9e9ee;
   /* 玻璃：窗口底层是系统原生毛玻璃（透出桌面），控件层再叠一层带高光边的液态玻璃 */
-  --window-tint: rgba(242, 242, 247, 0.6);
-  --content-box: rgba(255, 255, 255, 0.82);
-  --glass-bg: rgba(255, 255, 255, 0.34);
-  --glass-toolbar: rgba(255, 255, 255, 0.42);
-  --glass-strong: rgba(255, 255, 255, 0.62);
+  --window-tint: rgba(242, 242, 247, 0.5);
+  --content-box: rgba(255, 255, 255, 0.74);
+  --glass-bg: rgba(255, 255, 255, 0.16);
+  --glass-toolbar: rgba(255, 255, 255, 0.18);
+  --glass-strong: rgba(255, 255, 255, 0.4);
   --glass-rim-top: rgba(255, 255, 255, 0.98);
   --glass-rim-bottom: rgba(255, 255, 255, 0.4);
   --glass-inner: inset 0 1px 1px rgba(255, 255, 255, 0.9), inset 0 -1px 2px rgba(255, 255, 255, 0.35), inset 0 0 28px rgba(255, 255, 255, 0.28);
@@ -47,11 +47,11 @@
   --segment-selected: #636366;
   --segment-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
   --thumb-bg: #1f1f21;
-  --window-tint: rgba(18, 18, 20, 0.58);
-  --content-box: rgba(44, 44, 46, 0.8);
-  --glass-bg: rgba(70, 70, 76, 0.28);
-  --glass-toolbar: rgba(58, 58, 62, 0.42);
-  --glass-strong: rgba(110, 110, 118, 0.42);
+  --window-tint: rgba(18, 18, 20, 0.5);
+  --content-box: rgba(44, 44, 46, 0.72);
+  --glass-bg: rgba(70, 70, 76, 0.14);
+  --glass-toolbar: rgba(40, 40, 44, 0.2);
+  --glass-strong: rgba(110, 110, 118, 0.3);
   --glass-rim-top: rgba(255, 255, 255, 0.32);
   --glass-rim-bottom: rgba(255, 255, 255, 0.08);
   --glass-inner: inset 0 1px 1px rgba(255, 255, 255, 0.22), inset 0 -1px 2px rgba(255, 255, 255, 0.05), inset 0 0 28px rgba(255, 255, 255, 0.05);
@@ -191,7 +191,7 @@ textarea,
   background: var(--glass-toolbar);
   -webkit-backdrop-filter: blur(18px) saturate(190%);
   backdrop-filter: blur(18px) saturate(190%);
-  backdrop-filter: url(#liquid-glass) saturate(190%) brightness(1.04);
+  backdrop-filter: url(#liquid-glass) saturate(200%) brightness(1.06);
   box-shadow: var(--glass-shadow), var(--glass-inner);
 }
 
@@ -521,4 +521,207 @@ textarea,
 .app-content > .ant-layout-content {
   -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 18px);
   mask-image: linear-gradient(to bottom, transparent 0, #000 18px);
+}
+
+/* ---------- 系统设置样式：分组框 + 一行一项 ---------- */
+.mac-section {
+  margin-bottom: 22px;
+}
+
+.mac-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 14px 7px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--secondary);
+}
+
+.mac-section-foot {
+  padding: 7px 14px 0;
+  font-size: 12px;
+  color: var(--secondary);
+}
+
+.mac-group {
+  border-radius: 14px;
+  background: var(--content-box);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  backdrop-filter: blur(24px) saturate(160%);
+  box-shadow: var(--box-shadow);
+  overflow: hidden;
+}
+
+.mac-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  min-height: 46px;
+  padding: 8px 16px;
+  position: relative;
+}
+
+.mac-row + .mac-row::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 16px;
+  right: 0;
+  border-top: 0.5px solid var(--separator);
+}
+
+.mac-row-vertical {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  padding: 12px 16px;
+}
+
+.mac-row-label {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex-shrink: 0;
+  max-width: 50%;
+}
+
+.mac-row-vertical .mac-row-label {
+  max-width: none;
+}
+
+.mac-row-label small {
+  font-size: 12px;
+  color: var(--secondary);
+  line-height: 1.4;
+  margin-top: 1px;
+}
+
+.mac-row-control {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.mac-row-vertical .mac-row-control {
+  justify-content: flex-start;
+}
+
+.mac-info {
+  margin-left: 6px;
+  font-size: 13px;
+  color: var(--tertiary);
+  cursor: help;
+}
+
+.mac-path {
+  display: inline-flex;
+  min-width: 0;
+  max-width: min(100%, 420px);
+  color: var(--secondary);
+  white-space: nowrap;
+}
+
+.mac-path-head {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex-shrink: 1;
+}
+
+.mac-path-name {
+  color: var(--label);
+  flex-shrink: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mac-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+
+.mac-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.12);
+}
+
+.mac-dot-ok {
+  background: var(--green);
+}
+
+.mac-dot-warn {
+  background: var(--orange);
+}
+
+.mac-dot-error {
+  background: var(--red);
+}
+
+.mac-dot-idle {
+  background: var(--tertiary);
+}
+
+/* 提示框：不要彩色边框和大色块，安静的浅底 */
+.ant-alert {
+  border: none !important;
+  background: var(--fill) !important;
+  border-radius: 12px !important;
+  padding: 9px 14px !important;
+}
+
+.ant-alert .ant-alert-message {
+  font-size: 13px;
+}
+
+.ant-alert .ant-alert-description {
+  font-size: 12.5px;
+  color: var(--secondary);
+}
+
+/* 开关：macOS 原生样式，不在里面写字 */
+.ant-switch .ant-switch-inner {
+  display: none;
+}
+
+.ant-switch {
+  box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.06);
+}
+
+.ant-switch .ant-switch-handle::before {
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.22), 0 0 0 0.5px rgba(0, 0, 0, 0.04) !important;
+}
+
+/* 表单项更紧凑 */
+.ant-form-vertical .ant-form-item {
+  margin-bottom: 14px;
+}
+
+.ant-form-item .ant-form-item-extra {
+  font-size: 12px;
+}
+
+.ellipsis-line {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 400;
+}
+
+.mac-group > .ant-table-wrapper .ant-table,
+.mac-group .ant-table {
+  box-shadow: none;
+  border-radius: 0;
+  background: transparent;
 }

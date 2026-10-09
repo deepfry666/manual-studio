@@ -71,7 +71,7 @@ export function FeedbackPanel({ data, running, onChanged }: { data: ProjectDetai
           value={text}
           onChange={(event) => setText(event.target.value)}
           autoSize={{ minRows: 1, maxRows: 4 }}
-          placeholder={canAnalyze ? "随便写，比如「图3 底部按钮改成蓝色」「图5 说明多写异常处理」「整体颜色淡一点」。按 ⌘+回车 加入清单，先不执行" : "项目跑出规划和截图之后再提修改意见"}
+          placeholder={canAnalyze ? "例如「图3 按钮改成蓝色」，⌘↩ 加入清单" : "跑出截图后再提修改意见"}
           disabled={!canAnalyze || Boolean(data.state.readOnly)}
           onKeyDown={(event) => {
             if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {

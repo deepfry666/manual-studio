@@ -173,7 +173,7 @@ export function ScreensTab({ data, running, onChanged }: { data: ProjectDetail; 
       />
 
       <Modal open={Boolean(alternates)} onCancel={() => setAlternates(null)} footer={null} width={760} title={alternates ? `${alternates.id} 的备选图` : ""}>
-        <Typography.Paragraph className="muted">补发时输掉的异步任务出图后会存在这里，不会白花钱。换上后需要重新验收。</Typography.Paragraph>
+        <Typography.Paragraph className="muted">补发时另一条线路出的图，换上后要重新验收。</Typography.Paragraph>
         <Space wrap size={16}>
           {alternates?.alternates.map((item) => (
             <Space key={item.file} direction="vertical" align="center">

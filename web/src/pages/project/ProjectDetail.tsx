@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { Alert, App, Breadcrumb, Button, Input, Modal, Space, Spin, Steps, Tabs, Tag, Tooltip, Typography } from "antd";
-import { CaretRightOutlined, EditOutlined, FolderOpenOutlined, PauseOutlined } from "@ant-design/icons";
+import { Alert, App, Breadcrumb, Button, Dropdown, Input, Modal, Space, Spin, Steps, Tabs, Tag, Tooltip, Typography } from "antd";
+import { CaretRightOutlined, EditOutlined, EllipsisOutlined, FolderOpenOutlined, PauseOutlined } from "@ant-design/icons";
 import { call, formatDuration } from "../../api";
 import { PROJECT_STATUS, STEP_LABELS, STEP_ORDER, navigate, useDebounced, useLoader, useStudioEvents } from "../../hooks";
 import type { LiveProgress, ProjectDetail, StepStatus } from "../../types";
@@ -97,27 +97,27 @@ export function ProjectDetailPage({ dir }: { dir: string }) {
           {!readOnly && <RenameButton dir={dir} name={state.request.softwareName} disabled={running} />}
         </Space>
         <Space>
-          <Tooltip title={dir}>
-            <Button icon={<FolderOpenOutlined />} onClick={() => call("openPath", dir)}>
-              打开文件夹
-            </Button>
+          <Tooltip title="在访达中打开">
+            <Button icon={<FolderOpenOutlined />} onClick={() => call("openPath", dir)} />
           </Tooltip>
-          <Button
-            disabled={running}
-            onClick={() =>
-              modal.confirm({
-                title: "从列表移除这个项目？",
-                content: "只是不在软件里显示，项目文件夹和里面的文件不会删除。以后可以用「导入历史项目」重新加回来。",
-                okText: "移除",
-                onOk: async () => {
-                  await call("removeFromList", dir);
-                  navigate("projects");
-                },
-              })
-            }
+          <Dropdown
+            trigger={["click"]}
+            menu={{
+              items: [{ key: "remove", label: "从列表移除…", disabled: running }],
+              onClick: () =>
+                modal.confirm({
+                  title: "从列表移除这个项目？",
+                  content: "只是不在软件里显示，项目文件夹不会删除。",
+                  okText: "移除",
+                  onOk: async () => {
+                    await call("removeFromList", dir);
+                    navigate("projects");
+                  },
+                }),
+            }}
           >
-            从列表移除
-          </Button>
+            <Button icon={<EllipsisOutlined />} />
+          </Dropdown>
           {running ? (
             <Button danger icon={<PauseOutlined />} onClick={() => call("cancel", dir)}>
               停止
@@ -213,9 +213,7 @@ function RenameButton({ dir, name, disabled }: { dir: string; name: string; disa
           }
         }}
       >
-        <Typography.Paragraph className="muted">
-          改名会影响文件名、文档标题、页眉、TXT 和代码文档。不会重新规划或重新生图，但会用新名字重新检查截图里有没有出现软件名。旧交付包会先归档。如果文件夹名和旧软件名一样，文件夹也会一起改名。
-        </Typography.Paragraph>
+        <Typography.Paragraph className="muted">不会重新规划和生图；会用新名字重新验收截图，再重建交付包。</Typography.Paragraph>
         <Input value={value} onChange={(event) => setValue(event.target.value)} />
       </Modal>
     </>
