@@ -103,13 +103,14 @@ export function ProvidersPage() {
           },
           {
             title: "线路",
+            width: 320,
             render: (_, provider) => (
-              <Space direction="vertical" size={0}>
+              <Space direction="vertical" size={0} style={{ maxWidth: 300 }}>
                 <Space>
-                  <Typography.Text strong>{provider.name}</Typography.Text>
+                  <Typography.Text strong ellipsis={{ tooltip: provider.name }} style={{ maxWidth: 230 }}>{provider.name}</Typography.Text>
                   {!bundle.providerKeys[provider.id] && <Tag color="red">没有密钥</Tag>}
                 </Space>
-                <span className="muted mono">
+                <span className="muted ellipsis-line" style={{ maxWidth: 300 }}>
                   {provider.model} · {bundle.presets.image[provider.preset]?.protocol === "async" ? "异步" : "同步"} · {provider.sizeMode === "ratio" ? "比例" : provider.pixelSize}
                 </span>
               </Space>
@@ -253,7 +254,7 @@ function StrategyCard({ bundle, onSaved }: { bundle: SettingsBundle; onSaved: ()
   };
   const hedge = image.hedge;
   return (
-    <div style={{ marginTop: 24 }}>
+    <div className="mac-columns" style={{ marginTop: 24 }}>
       <Section title="生图">
         <MacRow label="目标尺寸" info="只收比例的线路会自动换成最接近的比例（864x1824 → 1:2）。">
           <Input value={size} onChange={(event) => setSize(event.target.value)} onBlur={() => size !== image.targetSize && save({ targetSize: size })} style={{ width: 130 }} />

@@ -14,7 +14,7 @@ export function NewProjectPage() {
   const settings = useSettings();
   const data = settings.data?.settings;
   return (
-    <div className="page" style={{ maxWidth: 820 }}>
+    <div className="page page-narrow">
       <div className="page-header">
         <h2>新建项目</h2>
         <Segmented

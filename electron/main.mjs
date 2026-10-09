@@ -190,7 +190,7 @@ function createWindow() {
     // 窗口底层用系统原生毛玻璃（透出桌面），界面在上面叠液态玻璃
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 26, y: 26 },
-    vibrancy: "under-window",
+    vibrancy: "sidebar",
     visualEffectState: "active",
     backgroundColor: "#00000000",
     show: false,

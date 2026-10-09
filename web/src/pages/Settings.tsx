@@ -24,7 +24,7 @@ const PLATFORMS = [
 export function SettingsPage({ tab }: { tab?: string }) {
   const active = ["general", "code", "pdf", "import", "txt"].includes(tab || "") ? (tab as string) : "general";
   return (
-    <div className="page" style={{ maxWidth: 860 }}>
+    <div className="page page-narrow">
       <div className="page-header">
         <h2>设置</h2>
       </div>

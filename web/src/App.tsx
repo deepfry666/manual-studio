@@ -1,6 +1,8 @@
 import { Alert, Button, Layout, Menu, Space } from "antd";
 import { ApiOutlined, AppstoreOutlined, PlusCircleOutlined, SettingOutlined } from "@ant-design/icons";
+import { useEffect } from "react";
 import { navigate, useHashRoute, useLoader, useStudioEvents } from "./hooks";
+import logoUrl from "./assets/logo.svg";
 import { call } from "./api";
 import { ProjectsPage } from "./pages/Projects";
 import { ProjectDetailPage } from "./pages/project/ProjectDetail";
@@ -27,7 +29,25 @@ interface PendingJob {
   state: string;
 }
 
+/** 玻璃反光跟着鼠标走：把鼠标位置写进 CSS 变量，所有玻璃面共用这个「光源」。 */
+function usePointerLight() {
+  useEffect(() => {
+    let frame = 0;
+    const onMove = (event: PointerEvent) => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        document.documentElement.style.setProperty("--mx", `${event.clientX}px`);
+        document.documentElement.style.setProperty("--my", `${event.clientY}px`);
+      });
+    };
+    window.addEventListener("pointermove", onMove, { passive: true });
+    return () => window.removeEventListener("pointermove", onMove);
+  }, []);
+}
+
 export function App() {
+  usePointerLight();
   const route = useHashRoute();
   const pending = useLoader(() => call<PendingJob[]>("pendingJobs"));
   useStudioEvents((event) => {
@@ -65,8 +85,15 @@ export function App() {
       <Sider width={212} className="app-sider" theme="light">
         {/* 顶部留给红绿灯按钮，可拖动窗口 */}
         <div className="sider-top" />
+        <div className="sider-brand">
+          <img src={logoUrl} alt="" />
+          <div>
+            <b>软件指南生成器</b>
+            <small>截图 · 文案 · 交付包</small>
+          </div>
+        </div>
         <Menu mode="inline" selectedKeys={[selected]} items={MENU} onClick={({ key }) => navigate(key)} style={{ borderInlineEnd: "none" }} />
-        <div className="sider-footer">软件指南生成器</div>
+        <div className="sider-footer">v{__APP_VERSION__}</div>
       </Sider>
       <Layout className="app-content">
         <div className="drag-region" />
@@ -124,10 +151,7 @@ function LiquidGlassFilter() {
     <svg width="0" height="0" style={{ position: "absolute" }} aria-hidden="true">
       <filter id="liquid-glass" x="0%" y="0%" width="100%" height="100%" colorInterpolationFilters="sRGB" primitiveUnits="objectBoundingBox">
         <feImage href={LENS_MAP} x="0" y="0" width="1" height="1" preserveAspectRatio="none" result="lens" />
-        <feDisplacementMap in="SourceGraphic" in2="lens" scale="0.09" xChannelSelector="R" yChannelSelector="G" result="bent" />
-        <feTurbulence type="fractalNoise" baseFrequency="0.004 0.012" numOctaves="1" seed="4" result="noise" />
-        <feDisplacementMap in="bent" in2="noise" scale="0.012" xChannelSelector="R" yChannelSelector="G" result="liquid" />
-        <feGaussianBlur in="liquid" stdDeviation="0.0025" />
+        <feDisplacementMap in="SourceGraphic" in2="lens" scale="0.07" xChannelSelector="R" yChannelSelector="G" />
       </filter>
     </svg>
   );

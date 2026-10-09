@@ -309,3 +309,16 @@ test("缺标准提示词的历史项目：检查更新不写文件，重生某�
   assert.ok(!fs.existsSync(path.join(dir, "prompts", "screen-01.md")), "没动其他屏");
   assert.match(fs.readFileSync(path.join(dir, "prompts", "screen-02.md"), "utf8"), /Do NOT render the software name/);
 });
+
+test("设置里的数值被存成空值时自动换回默认值", async () => {
+  const { createSettingsStore } = await import("../core/settings.mjs");
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "settings-"));
+  fs.writeFileSync(path.join(dir, "settings.json"), JSON.stringify({ image: { globalConcurrency: null, hedge: { minSec: "x" } }, pipeline: { batchConcurrency: 5 } }));
+  const store = createSettingsStore(dir);
+  const settings = await store.get();
+  assert.equal(settings.image.globalConcurrency, 10);
+  assert.equal(settings.image.hedge.minSec, 20);
+  assert.equal(settings.pipeline.batchConcurrency, 5);
+  const next = await store.update({ image: { maxAttemptsPerScreen: null } });
+  assert.equal(next.image.maxAttemptsPerScreen, 4);
+});

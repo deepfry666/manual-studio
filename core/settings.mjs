@@ -84,6 +84,16 @@ export function deepMerge(base, patch) {
   return result;
 }
 
+/** 数值型设置如果被存成空值或非法值（比如输入框清空），换回默认值。 */
+export function sanitizeSettings(value, defaults = defaultSettings()) {
+  if (!isPlainObject(value) || !isPlainObject(defaults)) return value;
+  for (const [key, fallback] of Object.entries(defaults)) {
+    if (typeof fallback === "number" && !(typeof value[key] === "number" && Number.isFinite(value[key]))) value[key] = fallback;
+    else if (isPlainObject(fallback) && isPlainObject(value[key])) sanitizeSettings(value[key], fallback);
+  }
+  return value;
+}
+
 export function createSettingsStore(dataDir) {
   const file = path.join(dataDir, "settings.json");
   const serial = createSerialQueue();
@@ -92,7 +102,7 @@ export function createSettingsStore(dataDir) {
   async function load() {
     if (cache) return cache;
     const stored = await readJson(file, {});
-    cache = deepMerge(defaultSettings(), stored);
+    cache = sanitizeSettings(deepMerge(defaultSettings(), stored));
     // 旧版本把代码文件类型放在 codeDefaults 里
     if (!stored.codeSource && Array.isArray(stored.codeDefaults?.extensions)) cache.codeSource.extensions = [...stored.codeDefaults.extensions];
     return cache;
@@ -107,7 +117,7 @@ export function createSettingsStore(dataDir) {
     update(patch) {
       return serial(async () => {
         const current = structuredClone(await load());
-        const next = typeof patch === "function" ? await patch(current) : deepMerge(current, patch);
+        const next = sanitizeSettings(typeof patch === "function" ? await patch(current) : deepMerge(current, patch));
         await writeJsonAtomic(file, next);
         cache = next;
         return structuredClone(next);
