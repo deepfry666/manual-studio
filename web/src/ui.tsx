@@ -1,5 +1,5 @@
-import type { ReactNode } from "react";
-import { Tooltip } from "antd";
+import { useEffect, useState, type ReactNode } from "react";
+import { Segmented, Tooltip } from "antd";
 import { InfoCircleOutlined } from "@ant-design/icons";
 
 /**
@@ -67,5 +67,28 @@ export function Status({ tone, children }: { tone: "ok" | "warn" | "error" | "id
       <i className={`mac-dot mac-dot-${tone}`} />
       {children}
     </span>
+  );
+}
+
+/**
+ * 标签页：用真正的分段控件做切换（左右内边距一致、滑块平滑移动），
+ * 打开过的页签保留在内存里，切回来时输入不会丢。
+ */
+export function GlassTabs({ activeKey, onChange, items, keepMounted = true }: { activeKey: string; onChange: (key: string) => void; items: { key: string; label: ReactNode; children: ReactNode }[]; keepMounted?: boolean }) {
+  const [visited, setVisited] = useState<string[]>([activeKey]);
+  useEffect(() => {
+    setVisited((list) => (list.includes(activeKey) ? list : [...list, activeKey]));
+  }, [activeKey]);
+  return (
+    <div className="glass-tabs">
+      <Segmented className="glass-tabs-switch" value={activeKey} onChange={(value) => onChange(String(value))} options={items.map((item) => ({ value: item.key, label: item.label }))} />
+      {items.map((item) =>
+        item.key === activeKey || (keepMounted && visited.includes(item.key)) ? (
+          <div key={item.key} style={{ display: item.key === activeKey ? undefined : "none" }}>
+            {item.children}
+          </div>
+        ) : null
+      )}
+    </div>
   );
 }

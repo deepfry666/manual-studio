@@ -808,3 +808,35 @@ textarea,
   gap: 0 22px;
   align-items: start;
 }
+
+/* 标签页切换（分段控件）：胶囊轨道，四周内边距一致，滑块是一块玻璃 */
+.ant-segmented {
+  border-radius: 999px !important;
+  padding: 3px !important;
+}
+
+.ant-segmented .ant-segmented-item,
+.ant-segmented .ant-segmented-thumb {
+  border-radius: 999px !important;
+}
+
+.ant-segmented .ant-segmented-thumb {
+  background: var(--control-hover) !important;
+  box-shadow: var(--shadow-small), var(--inner);
+}
+
+.ant-segmented .ant-segmented-item-selected {
+  background: var(--control-hover) !important;
+}
+
+.glass-tabs-switch {
+  margin-bottom: 18px;
+}
+
+.glass-tabs-switch .ant-segmented-item-label {
+  min-height: 32px;
+  line-height: 32px;
+  padding: 0 18px;
+  font-size: 14px;
+  font-weight: 500;
+}

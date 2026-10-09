@@ -1,5 +1,5 @@
-import { Tabs } from "antd";
 import { navigate } from "../hooks";
+import { GlassTabs } from "../ui";
 import { ProvidersPage } from "./Providers";
 import { LlmPage } from "./Llm";
 import { CallsPage } from "./Calls";
@@ -12,10 +12,10 @@ export function ModelsPage({ tab }: { tab?: string }) {
       <div className="page-header">
         <h2>模型与线路</h2>
       </div>
-      <Tabs
+      <GlassTabs
         activeKey={active}
         onChange={(key) => navigate("models", key)}
-        destroyOnHidden
+        keepMounted={false}
         items={[
           { key: "providers", label: "生图线路", children: <div className="embedded"><ProvidersPage /></div> },
           { key: "llm", label: "大模型", children: <div className="embedded"><LlmPage /></div> },

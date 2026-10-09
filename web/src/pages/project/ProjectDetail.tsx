@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Alert, App, Breadcrumb, Button, Dropdown, Input, Modal, Space, Spin, Steps, Tabs, Tag, Tooltip, Typography } from "antd";
+import { Alert, App, Breadcrumb, Button, Dropdown, Input, Modal, Space, Spin, Steps, Tag, Tooltip, Typography } from "antd";
 import { CaretRightOutlined, EditOutlined, EllipsisOutlined, FolderOpenOutlined, PauseOutlined } from "@ant-design/icons";
 import { call, formatDuration } from "../../api";
 import { PROJECT_STATUS, STEP_LABELS, STEP_ORDER, navigate, useDebounced, useLoader, useStudioEvents } from "../../hooks";
@@ -10,6 +10,7 @@ import { ScreensTab } from "./ScreensTab";
 import { ContentTab } from "./ContentTab";
 import { DeliveryTab } from "./DeliveryTab";
 import { LivePanel } from "./LivePanel";
+import { GlassTabs } from "../../ui";
 import { FeedbackPanel } from "./FeedbackPanel";
 
 const STEP_STATUS: Record<StepStatus, "wait" | "process" | "finish" | "error"> = {
@@ -168,7 +169,7 @@ export function ProjectDetailPage({ dir }: { dir: string }) {
         })}
       />
 
-      <Tabs
+      <GlassTabs
         activeKey={activeTab}
         onChange={setTab}
         items={[

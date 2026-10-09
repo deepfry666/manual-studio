@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
-import { Card, Col, Row, Select, Space, Statistic, Table, Tabs, Tag, Typography } from "antd";
+import { Card, Col, Row, Select, Space, Statistic, Table, Tag, Typography } from "antd";
+import { GlassTabs } from "../ui";
 import { call, formatSeconds, formatTime } from "../api";
 import { useDebounced, useLoader, useSettings, useStudioEvents } from "../hooks";
 import type { CallRow } from "../types";
@@ -16,6 +17,7 @@ function percentile(values: number[], p: number) {
 export function CallsPage() {
   const settings = useSettings();
   const [provider, setProvider] = useState<string | undefined>();
+  const [tab, setTab] = useState("image");
   const calls = useLoader(() => call<CallRow[]>("queryCalls", { limit: 2000 }));
   const llmCalls = useLoader(() => call<CallRow[]>("queryLlmCalls", { limit: 500 }));
   const reload = useDebounced(calls.reload, 1000);
@@ -84,7 +86,9 @@ export function CallsPage() {
           </Card>
         </Col>
       </Row>
-      <Tabs
+      <GlassTabs
+        activeKey={tab}
+        onChange={setTab}
         items={[
           {
             key: "image",

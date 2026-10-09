@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import { App, Button, Input, InputNumber, Select, Space, Switch, Table, Tabs, Tag } from "antd";
+import { App, Button, Input, InputNumber, Select, Space, Switch, Table, Tag } from "antd";
 import { call, formatTime } from "../api";
 import { GRADE_LABEL, navigate, useLoader, useSettings } from "../hooks";
-import { PathText, Row, Section, Status } from "../ui";
+import { GlassTabs, PathText, Row, Section, Status } from "../ui";
 import type { FontStatus, Settings } from "../types";
 
 const TXT_LABELS: Record<string, string> = {
@@ -28,7 +28,7 @@ export function SettingsPage({ tab }: { tab?: string }) {
       <div className="page-header">
         <h2>设置</h2>
       </div>
-      <Tabs
+      <GlassTabs
         activeKey={active}
         onChange={(key) => navigate("settings", key)}
         items={[
