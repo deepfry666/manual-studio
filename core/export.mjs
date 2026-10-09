@@ -18,12 +18,31 @@ async function bundleFiles(bundleDir) {
   }
 }
 
+/** 默认的总文件夹名：软著导出-20261009-1930 */
+export function defaultGroupName(date = new Date()) {
+  const pad = (value) => String(value).padStart(2, "0");
+  return `软著导出-${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}`;
+}
+
+/**
+ * 实际导出到哪里：多选时在导出位置下面建一个总文件夹（重名就加 -2、-3），单选时直接放在导出位置。
+ */
+export async function resolveExportRoot(targetDir, groupName) {
+  if (!targetDir || !path.isAbsolute(targetDir)) throw new Error("请选择导出位置");
+  const name = String(groupName || "").trim();
+  if (!name) return { root: targetDir, groupFolder: null };
+  assertSafeSoftwareName(name);
+  let candidate = name;
+  for (let index = 2; await exists(path.join(targetDir, candidate)); index += 1) candidate = `${name}-${index}`;
+  return { root: path.join(targetDir, candidate), groupFolder: candidate };
+}
+
 /**
  * 导出前先看一遍：每个项目能不能导、导出哪些文件、目标位置有没有同名文件夹。
  * 文件夹名就是项目名（软件名）。
  */
-export async function planExport({ dirs, targetDir, projectStore }) {
-  if (!targetDir || !path.isAbsolute(targetDir)) throw new Error("请选择导出位置");
+export async function planExport({ dirs, targetDir: baseDir, projectStore, groupName = "" }) {
+  const { root: targetDir, groupFolder } = await resolveExportRoot(baseDir, groupName);
   const items = [];
   const names = new Set();
   for (const dir of dirs) {
@@ -62,15 +81,17 @@ export async function planExport({ dirs, targetDir, projectStore }) {
     if (Object.values(state.lastBuild?.pdfFonts || {}).some((font) => font && font.ok === false)) item.warnings.push("PDF 字体不对，建议先「重新导出 PDF」");
     if (!item.files.some((file) => file.endsWith(".pdf"))) item.warnings.push("没有 PDF");
   }
-  return { targetDir, items };
+  return { targetDir, groupFolder, items };
 }
 
 /**
  * 导出：每个项目一个文件夹（名字就是项目名），里面是交付的 5 个或 3 个文件。只复制，不动原项目。
+ * groupName 不为空时（多选导出），这些项目文件夹都放进导出位置下的同一个总文件夹。
  * 目标位置已有同名文件夹时按 conflict 处理：skip 跳过；overwrite 把旧文件夹移到废纸篓（没有废纸篓时改名留底）后再导出。
  */
-export async function exportBundles({ dirs, targetDir, projectStore, conflict = "skip", trashItem = null }) {
-  const plan = await planExport({ dirs, targetDir, projectStore });
+export async function exportBundles({ dirs, targetDir: baseDir, projectStore, conflict = "skip", trashItem = null, groupName = "" }) {
+  const plan = await planExport({ dirs, targetDir: baseDir, projectStore, groupName });
+  const targetDir = plan.targetDir;
   await fsp.mkdir(targetDir, { recursive: true });
   const exported = [];
   const skipped = [];
@@ -101,5 +122,7 @@ export async function exportBundles({ dirs, targetDir, projectStore, conflict = 
     }
     exported.push({ name: item.name, folder: item.folder, files: item.files, warnings: item.warnings });
   }
-  return { targetDir, exported, skipped };
+  // 总文件夹里一个都没导出时，不留下空文件夹
+  if (plan.groupFolder && !exported.length) await fsp.rmdir(targetDir).catch(() => {});
+  return { targetDir, groupFolder: plan.groupFolder, exported, skipped };
 }

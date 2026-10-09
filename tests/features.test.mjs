@@ -161,6 +161,34 @@ test("批量导出：每个项目一个文件夹（名字是项目名），同�
   assert.equal(fs.readdirSync(path.join(target, "乙软件 V1.0")).length, 3);
 });
 
+test("多选导出放进同一个总文件夹，总文件夹重名自动加 -2；规划确认默认关闭", { timeout: 60_000 }, async (t) => {
+  const ctx = await setupCore();
+  t.after(ctx.close);
+  assert.equal((await (await createCore({ dataDir: path.join(ctx.root, "fresh2") })).getSettings()).settings.pipeline.reviewPlanSingle, false);
+  const a = await fakeBuiltProject(ctx.core, "项目A V1.0", ["项目A V1.0指南.docx", "项目A V1.0指南.txt"]);
+  const b = await fakeBuiltProject(ctx.core, "项目B V1.0", ["项目B V1.0指南.docx", "项目B V1.0指南.txt"]);
+  const desktop = path.join(ctx.root, "桌面");
+  await fsp.mkdir(desktop, { recursive: true });
+
+  const plan = await ctx.core.planExport([a, b], desktop, { groupName: "软著导出-测试" });
+  assert.equal(plan.targetDir, path.join(desktop, "软著导出-测试"));
+  const first = await ctx.core.exportBundles([a, b], desktop, { groupName: "软著导出-测试" });
+  assert.deepEqual(fs.readdirSync(desktop), ["软著导出-测试"], "桌面上只多了一个总文件夹");
+  assert.deepEqual(fs.readdirSync(path.join(desktop, "软著导出-测试")).sort(), ["项目A V1.0", "项目B V1.0"]);
+  assert.equal(first.targetDir, path.join(desktop, "软著导出-测试"));
+
+  const second = await ctx.core.exportBundles([a, b], desktop, { groupName: "软著导出-测试" });
+  assert.equal(second.groupFolder, "软著导出-测试-2");
+  assert.equal(second.exported.length, 2);
+  // 导出位置记的是桌面，不是总文件夹
+  assert.equal((await ctx.core.getSettings()).settings.export.lastDir, desktop);
+
+  // 单选：直接放在导出位置
+  await ctx.core.exportBundles([a], desktop);
+  assert.ok(fs.existsSync(path.join(desktop, "项目A V1.0", "项目A V1.0指南.docx")));
+  await assert.rejects(ctx.core.planExport([a, b], desktop, { groupName: "a/b" }), /不能包含/);
+});
+
 test("PDF 字体：替换表、核对、原版已安装时不替换、记住能用的字体名", () => {
   const xml = fontRegistryXml([{ from: "新宋体", to: "华文宋体" }]);
   assert.match(xml, /<prop oor:name="Replacement" oor:op="fuse"><value>true<\/value>/);

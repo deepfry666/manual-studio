@@ -17,7 +17,7 @@ import { collectCodeSource } from "./code-source.mjs";
 import { assertSafeSoftwareName } from "./build/build.mjs";
 import { findLibreOffice, resetLibreOfficeCache } from "./build/runtime.mjs";
 import { DOC_FONTS, SUBSTITUTES, SUBSTITUTE_CHOICES, installedFontFamilies, resolveFontPlan, installFontFiles } from "./build/fonts.mjs";
-import { planExport, exportBundles } from "./export.mjs";
+import { planExport, exportBundles, defaultGroupName } from "./export.mjs";
 import { LLM_PRESETS, listModels, chatCompletion } from "./llm/client.mjs";
 import { readJson, writeJsonAtomic, createSerialQueue, exists } from "./util/fsx.mjs";
 import { solidPng } from "./util/png.mjs";
@@ -403,12 +403,13 @@ export async function createCore({ dataDir, cipher, toPng, visionImage, fetchImp
     cancel: (dir) => pipeline.cancel(dir),
     actions: pipeline.actions,
     // ---------- 导出 ----------
-    async planExport(dirs, targetDir) {
-      return planExport({ dirs, targetDir, projectStore });
+    async planExport(dirs, targetDir, options = {}) {
+      return planExport({ dirs, targetDir, projectStore, groupName: options.groupName || "" });
     },
+    defaultExportGroupName: () => defaultGroupName(),
     async exportBundles(dirs, targetDir, options = {}) {
       for (const dir of dirs) if (pipeline.isRunning(dir)) throw new Error(`「${path.basename(dir)}」正在运行，等它跑完再导出`);
-      const result = await exportBundles({ dirs, targetDir, projectStore, conflict: options.conflict || "skip", trashItem });
+      const result = await exportBundles({ dirs, targetDir, projectStore, conflict: options.conflict || "skip", trashItem, groupName: options.groupName || "" });
       await settingsStore.update({ export: { lastDir: targetDir } });
       return result;
     },

@@ -11,13 +11,13 @@ import { SettingsPage } from "./pages/Settings";
 const { Sider, Content } = Layout;
 
 const MENU = [
-  { key: "projects", icon: <AppstoreOutlined />, label: "项目" },
   { key: "new", icon: <PlusCircleOutlined />, label: "新建项目" },
+  { key: "projects", icon: <AppstoreOutlined />, label: "历史项目" },
   { key: "models", icon: <ApiOutlined />, label: "模型与线路" },
   { key: "settings", icon: <SettingOutlined />, label: "设置" },
 ];
 
-/** 旧地址兼容：生图线路 / 大模型 / 调用记录 并进了「模型与线路」，批量队列并进了「项目」。 */
+/** 旧地址兼容：生图线路 / 大模型 / 调用记录 并进了「模型与线路」，批量队列并进了「历史项目」。 */
 const LEGACY_MODEL_TABS: Record<string, string> = { providers: "providers", llm: "llm", calls: "calls" };
 
 interface PendingJob {

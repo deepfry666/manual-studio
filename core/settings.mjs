@@ -52,7 +52,8 @@ export function defaultSettings() {
     pipeline: {
       defaultScreenCount: 7,
       platform: "iPhone 16 Pro Max / iOS 26",
-      reviewPlanSingle: true,
+      // 规划完是否先停下让人确认；默认不停，直接做完
+      reviewPlanSingle: false,
       reviewPlanBatch: false,
       batchConcurrency: 3,
       featureTextFloor: 300,

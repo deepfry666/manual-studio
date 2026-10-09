@@ -81,7 +81,7 @@ export function ProjectDetailPage({ dir }: { dir: string }) {
 
   return (
     <div className="page">
-      <Breadcrumb style={{ marginBottom: 8 }} items={[{ title: <a onClick={() => navigate("projects")}>项目</a> }, { title: state.request.softwareName }]} />
+      <Breadcrumb style={{ marginBottom: 8 }} items={[{ title: <a onClick={() => navigate("projects")}>历史项目</a> }, { title: state.request.softwareName }]} />
       <div className="page-header">
         <Space align="center" size="middle">
           <h2>{state.request.softwareName}</h2>

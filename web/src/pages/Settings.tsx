@@ -102,8 +102,8 @@ function GeneralSettings() {
             <Form.Item name={["pipeline", "platform"]} label="默认平台">
               <Select options={[{ value: "iPhone 16 Pro Max / iOS 26", label: "iPhone 16 Pro Max / iOS 26" }, { value: "Android 手机（原生 Android 界面）", label: "Android 手机" }]} />
             </Form.Item>
-            <Form.Item name={["pipeline", "reviewPlanSingle"]} label="单个项目：规划完先停下让我确认" valuePropName="checked">
-              <Switch />
+            <Form.Item name={["pipeline", "reviewPlanSingle"]} label="规划确认：规划完先停下让我检查" valuePropName="checked" extra="关闭时（默认）规划完直接生成截图，一路做完。批量新建的项目始终不停。">
+              <Switch checkedChildren="先确认" unCheckedChildren="直接做完" />
             </Form.Item>
             <Form.Item name={["pipeline", "featureTextFloor"]} label="每屏说明最少字符数" extra="按普通字符串长度计。排版模板固定要求至少 300，所以不能低于 300。">
               <InputNumber min={300} max={1000} />
@@ -304,7 +304,7 @@ function PdfSettings() {
             选择字体文件安装…
           </Button>
           <Typography.Paragraph className="muted" style={{ marginTop: 12, marginBottom: 0 }}>
-            已经做好的项目，可以在「项目」列表里勾选后点「重新导出 PDF」，只重转 PDF，Word 不动。
+            已经做好的项目，可以在「历史项目」列表里勾选后点「重新导出 PDF」，只重转 PDF，Word 不动。
           </Typography.Paragraph>
         </Card>
       </Col>

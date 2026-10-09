@@ -226,7 +226,7 @@ function BatchForm({ defaultPlatform, concurrency }: { defaultPlatform: string; 
         </Checkbox>
       </Space>
       <Typography.Paragraph className="muted" style={{ marginTop: 12, marginBottom: 0 }}>
-        批量项目跳过「规划确认」，直接跑到交付包。进度在「项目」列表里看；软件中途关闭，下次打开会自动接着跑。
+        批量项目跳过「规划确认」，直接跑到交付包。进度在「历史项目」列表里看；软件中途关闭，下次打开会自动接着跑。
       </Typography.Paragraph>
     </Card>
   );

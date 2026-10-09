@@ -118,7 +118,7 @@ export function ProjectsPage() {
   return (
     <div className="page">
       <div className="page-header">
-        <h2>项目</h2>
+        <h2>历史项目</h2>
         <Space>
           <Button
             icon={<ExportOutlined />}
@@ -343,14 +343,19 @@ function ExportModal({ dirs, lastDir, onClose, onDone }: { dirs: string[] | null
   const [items, setItems] = useState<ExportItem[] | null>(null);
   const [conflict, setConflict] = useState<"skip" | "overwrite" | null>(null);
   const [busy, setBusy] = useState(false);
+  // 多选时放进同一个总文件夹
+  const [groupName, setGroupName] = useState("");
+  const [resolvedRoot, setResolvedRoot] = useState("");
   const open = Boolean(dirs);
+  const multiple = (dirs?.length || 0) > 1;
 
-  const inspect = async (dir: string) => {
+  const inspect = async (dir: string, group = groupName) => {
     if (!dirs || !dir) return;
     setBusy(true);
     try {
-      const plan = await call<{ items: ExportItem[] }>("planExport", dirs, dir);
+      const plan = await call<{ items: ExportItem[]; targetDir: string }>("planExport", dirs, dir, { groupName: multiple ? group : "" });
       setItems(plan.items);
+      setResolvedRoot(plan.targetDir);
       setConflict(null);
     } catch (error) {
       message.error((error as Error).message);
@@ -359,12 +364,16 @@ function ExportModal({ dirs, lastDir, onClose, onDone }: { dirs: string[] | null
     }
   };
   useEffect(() => {
-    if (open) {
-      setTarget(lastDir);
-      setItems(null);
-      setConflict(null);
-      if (lastDir) inspect(lastDir);
-    }
+    if (!open) return;
+    setTarget(lastDir);
+    setItems(null);
+    setConflict(null);
+    setResolvedRoot("");
+    (async () => {
+      const name = (dirs?.length || 0) > 1 ? await call<string>("defaultExportGroupName") : "";
+      setGroupName(name);
+      if (lastDir) inspect(lastDir, name);
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
@@ -376,7 +385,7 @@ function ExportModal({ dirs, lastDir, onClose, onDone }: { dirs: string[] | null
     if (!dirs) return;
     setBusy(true);
     try {
-      const result = await call<{ exported: { name: string }[]; skipped: { name: string; reason: string }[]; targetDir: string }>("exportBundles", dirs, target, { conflict: conflict || "skip" });
+      const result = await call<{ exported: { name: string }[]; skipped: { name: string; reason: string }[]; targetDir: string }>("exportBundles", dirs, target, { conflict: conflict || "skip", groupName: multiple ? groupName : "" });
       onDone();
       modal.success({
         title: `已导出 ${result.exported.length} 个项目`,
@@ -415,11 +424,13 @@ function ExportModal({ dirs, lastDir, onClose, onDone }: { dirs: string[] | null
       width={760}
       onCancel={onClose}
       okText={ready.length ? `导出 ${conflict === "skip" ? ready.length - conflicts.length : ready.length} 个` : "导出"}
-      okButtonProps={{ disabled: !target || !ready.length || (conflicts.length > 0 && !conflict) || (conflict === "skip" && ready.length === conflicts.length) }}
+      okButtonProps={{ disabled: !target || !ready.length || (multiple && !groupName.trim()) || (conflicts.length > 0 && !conflict) || (conflict === "skip" && ready.length === conflicts.length) }}
       confirmLoading={busy}
       onOk={run}
     >
-      <Typography.Paragraph className="muted">每个项目导出成一个文件夹，文件夹名就是项目名，里面是它的交付文件（有代码文档 5 个，没有 3 个）。只复制，不改动原项目。</Typography.Paragraph>
+      <Typography.Paragraph className="muted">
+        每个项目导出成一个文件夹，文件夹名就是项目名，里面是它的交付文件（有代码文档 5 个，没有 3 个）。{multiple ? "选了多个项目时，这些文件夹都放进同一个总文件夹。" : ""}只复制，不改动原项目。
+      </Typography.Paragraph>
       <Space.Compact style={{ width: "100%", marginBottom: 12 }}>
         <Input value={target} readOnly placeholder="选择导出到哪里" />
         <Button
@@ -434,6 +445,23 @@ function ExportModal({ dirs, lastDir, onClose, onDone }: { dirs: string[] | null
           选择…
         </Button>
       </Space.Compact>
+      {multiple && (
+        <div style={{ marginBottom: 12 }}>
+          <Typography.Text>总文件夹名</Typography.Text>
+          <Input
+            style={{ marginTop: 6 }}
+            value={groupName}
+            onChange={(event) => setGroupName(event.target.value)}
+            onBlur={() => target && inspect(target)}
+            onPressEnter={() => target && inspect(target)}
+          />
+          {resolvedRoot && (
+            <Typography.Text className="muted mono" style={{ display: "block", marginTop: 6 }}>
+              将导出到：{resolvedRoot}
+            </Typography.Text>
+          )}
+        </div>
+      )}
       {conflicts.length > 0 && (
         <Alert
           style={{ marginBottom: 12 }}

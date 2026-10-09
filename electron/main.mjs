@@ -91,7 +91,8 @@ function methods() {
     createProjectsFromList: (text, defaults) => core.createProjectsFromList(text, defaults),
     getProgress: (dir) => core.getProgress(dir),
     stepEstimates: () => core.stepEstimates(),
-    planExport: (dirs, targetDir) => core.planExport(dirs, targetDir),
+    planExport: (dirs, targetDir, options) => core.planExport(dirs, targetDir, options),
+    defaultExportGroupName: () => core.defaultExportGroupName(),
     exportBundles: (dirs, targetDir, options) => core.exportBundles(dirs, targetDir, options),
     reexportPdfs: (dirs) => {
       core.reexportPdfs(dirs).then((result) => send({ type: "pdf-reexport-done", ...result })).catch((error) => send({ type: "log", level: "error", message: error.message }));
