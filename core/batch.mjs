@@ -59,6 +59,7 @@ export function createBatchQueue({ dataDir, settingsStore, pipeline, emit = () =
   }
 
   return {
+    kick: () => pump().catch(() => {}),
     async init() {
       await load();
       await persist();
@@ -120,10 +121,13 @@ export function createBatchQueue({ dataDir, settingsStore, pipeline, emit = () =
   };
 }
 
-/** 解析批量 CSV：软件名,截图数,功能侧重,代码来源,版本处理（第一行是表头时自动跳过）。 */
-export function parseBatchCsv(text) {
+/**
+ * 解析批量新建列表：每行一个项目，最简单就是每行一个软件名；
+ * 也可以用逗号（或 Tab）带上：软件名,截图数,重点功能,补充说明。第一行是表头时自动跳过。
+ */
+export function parseBatchList(text) {
   const rows = [];
-  const lines = String(text || "").replace(/^﻿/, "").split(/\r?\n/).filter((line) => line.trim());
+  const lines = String(text || "").replace(/^\uFEFF/, "").split(/\r?\n/).filter((line) => line.trim());
   for (const [index, line] of lines.entries()) {
     const cells = [];
     let current = "";
@@ -141,16 +145,12 @@ export function parseBatchCsv(text) {
       } else current += char;
     }
     cells.push(current.trim());
-    if (index === 0 && /软件名|名称|name/i.test(cells[0])) continue;
+    if (index === 0 && /^(软件名|名称|name)$/i.test(cells[0])) continue;
     if (!cells[0]) continue;
     const count = Number.parseInt(cells[1], 10);
-    rows.push({
-      softwareName: cells[0],
-      screenCount: Number.isFinite(count) && count > 0 ? count : null,
-      emphasis: cells[2] || "",
-      codeSourcePath: cells[3] || "",
-      versionPolicy: ["none", "in-name", "separate-metadata"].includes(cells[4]) ? cells[4] : "in-name",
-    });
+    // 旧格式第 4 列是代码来源路径：现在代码来源统一在设置里，路径就不当补充说明用了
+    const notes = cells[3] && !/^[/~]/.test(cells[3]) ? cells[3] : "";
+    rows.push({ softwareName: cells[0], screenCount: Number.isFinite(count) && count > 0 ? count : null, emphasis: cells[2] || "", notes });
   }
   return rows;
 }

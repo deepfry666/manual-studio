@@ -1,58 +1,118 @@
-import { useMemo, useState } from "react";
-import { Alert, App, Button, Checkbox, Form, Input, InputNumber, Modal, Radio, Select, Space, Switch, Table, Tag, Tooltip, Typography } from "antd";
-import { FolderOpenOutlined, ImportOutlined, PlusOutlined, UnorderedListOutlined } from "@ant-design/icons";
-import { call, formatTime } from "../api";
+import { useEffect, useMemo, useState } from "react";
+import { Alert, App, Button, Input, InputNumber, Modal, Progress, Radio, Select, Space, Table, Tag, Tooltip, Typography } from "antd";
+import { CaretRightOutlined, ExportOutlined, FilePdfOutlined, FolderOpenOutlined, PauseOutlined, PlusOutlined } from "@ant-design/icons";
+import { call, formatDuration, formatTime } from "../api";
 import { GRADE_LABEL, PROJECT_STATUS, STEP_LABELS, STEP_ORDER, navigate, useDebounced, useLoader, useSettings, useStudioEvents } from "../hooks";
-import type { ProjectSummary } from "../types";
+import type { BatchItem, ExportItem, ProjectSummary } from "../types";
 
-interface ScanRow {
-  dir: string;
-  name: string;
-  grade: "ready" | "needs-gate" | "readonly";
-  screens: number;
-  hasBundle: boolean;
-  hasCodeDoc: boolean;
-  managed: boolean;
-  mtime: number;
+const QUEUE_LABEL: Record<string, { label: string; color: string }> = {
+  queued: { label: "排队中", color: "default" },
+  paused: { label: "已暂停", color: "default" },
+};
+
+/** 每秒刷新一次，用来显示「已用时」。 */
+function useNow(active: boolean) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!active) return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [active]);
+  return now;
 }
 
-function stepProgress(project: ProjectSummary) {
+function stepSummary(project: ProjectSummary) {
   const done = STEP_ORDER.filter((step) => ["done", "skipped"].includes(project.steps[step])).length;
   const current = STEP_ORDER.find((step) => !["done", "skipped"].includes(project.steps[step]));
   return { done, current };
 }
 
+function livePercent(project: ProjectSummary) {
+  const live = project.progress;
+  if (!live?.step) return 2;
+  const index = STEP_ORDER.indexOf(live.step);
+  const inside = live.screens && ["images", "gate"].includes(live.step) ? live.screens.finished / Math.max(1, live.screens.total) : 0.3;
+  return Math.max(2, Math.min(99, Math.round(((index + inside) / STEP_ORDER.length) * 100)));
+}
+
 export function ProjectsPage() {
   const { message, modal } = App.useApp();
   const projects = useLoader(() => call<ProjectSummary[]>("listProjects"));
+  const queue = useLoader(() => call<{ items: BatchItem[]; paused: boolean }>("batchList"));
   const settings = useSettings();
-  const reload = useDebounced(projects.reload, 1200);
+  const reload = useDebounced(projects.reload, 800);
+  const [pdfJob, setPdfJob] = useState<{ index: number; total: number; current: string | null } | null>(null);
   useStudioEvents((event) => {
-    if (event.type === "project" || event.type === "batch") reload();
+    if (["project", "progress", "run-finished"].includes(event.type)) reload();
+    if (event.type === "batch") {
+      queue.setData({ items: event.items as BatchItem[], paused: Boolean(event.paused) });
+      reload();
+    }
+    if (event.type === "pdf-reexport") setPdfJob(event.current ? { index: Number(event.index), total: Number(event.total), current: String(event.current) } : null);
+    if (event.type === "pdf-reexport-done") {
+      const failed = (event.failed as string[]) || [];
+      const done = (event.done as { warnings: string[] }[]) || [];
+      const fontWarnings = done.filter((item) => item.warnings?.length).length;
+      if (failed.length || fontWarnings) {
+        modal.warning({
+          title: `重新导出 PDF：成功 ${done.length} 个${failed.length ? `，失败 ${failed.length} 个` : ""}`,
+          content: (
+            <div>
+              {fontWarnings > 0 && <p>{fontWarnings} 个项目转出来的字体仍然不对，可以在「设置 → PDF 与字体」里换一个替代字体再试。</p>}
+              <ul style={{ paddingLeft: 18, maxHeight: 260, overflow: "auto" }}>
+                {failed.map((line) => (
+                  <li key={line}>{line}</li>
+                ))}
+              </ul>
+            </div>
+          ),
+        });
+      } else message.success(`已重新导出 ${done.length} 个项目的 PDF`);
+      reload();
+    }
+    if (event.type === "run-finished" && event.status === "done") message.success(`「${event.name}」完成，本次用时 ${formatDuration(Number(event.ms))}`);
   });
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [selected, setSelected] = useState<string[]>([]);
-  const [createOpen, setCreateOpen] = useState(false);
-  const [csvOpen, setCsvOpen] = useState(false);
-  const [importOpen, setImportOpen] = useState(false);
+  const [exportDirs, setExportDirs] = useState<string[] | null>(null);
+  const anyRunning = (projects.data || []).some((project) => project.status === "running");
+  const now = useNow(anyRunning);
 
+  const list = projects.data || [];
   const rows = useMemo(() => {
-    const list = projects.data || [];
     return list.filter((project) => {
       if (query && !project.name.toLowerCase().includes(query.toLowerCase())) return false;
       if (statusFilter === "all") return true;
       if (statusFilter === "imported") return project.origin === "imported";
+      if (statusFilter === "queued") return project.queue?.status === "queued";
+      if (statusFilter === "font") return project.pdfFontProblem;
       return project.status === statusFilter;
     });
-  }, [projects.data, query, statusFilter]);
+  }, [list, query, statusFilter]);
+  const byDir = new Map(list.map((project) => [project.dir, project]));
+  const selectedRows = selected.map((dir) => byDir.get(dir)).filter(Boolean) as ProjectSummary[];
 
-  const enqueue = async () => {
-    const dirs = selected.filter((dir) => !(projects.data || []).find((project) => project.dir === dir)?.readOnly);
+  const start = async () => {
+    const dirs = selectedRows.filter((project) => !project.readOnly && project.status !== "running").map((project) => project.dir);
+    if (!dirs.length) return message.info("选中的项目都在运行或是只读的");
     await call("batchEnqueue", dirs);
-    message.success(`已加入批量队列：${dirs.length} 个项目`);
+    message.success(`已开始：${dirs.length} 个项目，每次同时处理 ${settings.data?.settings.pipeline.batchConcurrency || 3} 个`);
     setSelected([]);
-    navigate("batch");
+  };
+
+  const reexportPdf = (dirs: string[]) => {
+    const targets = dirs.filter((dir) => byDir.get(dir)?.hasBundle && byDir.get(dir)?.status !== "running");
+    if (!targets.length) return message.info("选中的项目没有交付包，或者正在运行");
+    modal.confirm({
+      title: `重新导出 ${targets.length} 个项目的 PDF？`,
+      content: "只用交付包里现有的 Word 重新转 PDF（修正字体），Word、TXT 和截图都不动；旧 PDF 移到项目的 archive 文件夹。每个项目大约 10–40 秒，一个个来。",
+      okText: "开始",
+      onOk: async () => {
+        await call("reexportPdfs", targets);
+        setSelected([]);
+      },
+    });
   };
 
   return (
@@ -60,39 +120,74 @@ export function ProjectsPage() {
       <div className="page-header">
         <h2>项目</h2>
         <Space>
-          <Button icon={<ImportOutlined />} onClick={() => setImportOpen(true)}>
-            导入历史项目
+          <Button
+            icon={<ExportOutlined />}
+            onClick={() => {
+              const dirs = list.filter((project) => project.hasBundle && project.status !== "missing" && (project.status === "done" || project.origin === "imported")).map((project) => project.dir);
+              if (!dirs.length) return message.info("还没有已完成的项目");
+              setExportDirs(dirs);
+            }}
+          >
+            导出全部已完成
           </Button>
-          <Button icon={<UnorderedListOutlined />} onClick={() => setCsvOpen(true)}>
-            批量新建
-          </Button>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => navigate("new")}>
             新建项目
           </Button>
         </Space>
       </div>
       <SetupHint />
+      <QueueBar queue={queue.data} concurrency={settings.data?.settings.pipeline.batchConcurrency || 3} onConcurrency={async (value) => {
+        await call("updateSettings", { pipeline: { batchConcurrency: value } });
+        settings.reload();
+      }} />
+      {pdfJob && (
+        <Alert style={{ marginBottom: 12 }} type="info" showIcon message={`正在重新导出 PDF：${pdfJob.index + 1}/${pdfJob.total}（${byDir.get(pdfJob.current || "")?.name || ""}）`} />
+      )}
       <Space style={{ marginBottom: 12 }} wrap>
-        <Input.Search allowClear placeholder="按软件名搜索" style={{ width: 260 }} onChange={(event) => setQuery(event.target.value)} />
+        <Input.Search allowClear placeholder="按软件名搜索" style={{ width: 240 }} onChange={(event) => setQuery(event.target.value)} />
         <Select
           value={statusFilter}
           onChange={setStatusFilter}
           style={{ width: 160 }}
           options={[
             { value: "all", label: "全部状态" },
-            { value: "done", label: "已完成" },
             { value: "running", label: "运行中" },
+            { value: "queued", label: "排队中" },
+            { value: "done", label: "已完成" },
             { value: "waiting", label: "等待确认" },
             { value: "needs-attention", label: "需要处理" },
             { value: "idle", label: "未完成" },
+            { value: "font", label: "PDF 字体不对" },
             { value: "imported", label: "导入的历史项目" },
             { value: "readonly", label: "只读" },
           ]}
         />
         {selected.length > 0 && (
-          <Button onClick={enqueue} type="primary" ghost>
-            把选中的 {selected.length} 个项目加入批量队列
-          </Button>
+          <>
+            <Typography.Text>已选 {selected.length} 个：</Typography.Text>
+            <Button type="primary" ghost icon={<CaretRightOutlined />} onClick={start}>
+              开始处理
+            </Button>
+            <Button icon={<ExportOutlined />} onClick={() => setExportDirs(selected)}>
+              导出…
+            </Button>
+            <Button icon={<FilePdfOutlined />} onClick={() => reexportPdf(selected)}>
+              重新导出 PDF
+            </Button>
+            {selectedRows.some((project) => project.queue && project.queue.status !== "running") && (
+              <Button
+                onClick={async () => {
+                  await call("batchRemoveProjects", selected);
+                  message.success("已移出队列");
+                }}
+              >
+                移出队列
+              </Button>
+            )}
+            <Button type="text" onClick={() => setSelected([])}>
+              取消选择
+            </Button>
+          </>
         )}
       </Space>
       <Table<ProjectSummary>
@@ -101,16 +196,15 @@ export function ProjectsPage() {
         dataSource={rows}
         size="middle"
         pagination={{ pageSize: 50, showSizeChanger: false, showTotal: (total) => `共 ${total} 个` }}
-        rowSelection={{ selectedRowKeys: selected, onChange: (keys) => setSelected(keys as string[]), getCheckboxProps: (record) => ({ disabled: record.readOnly }) }}
+        rowSelection={{ selectedRowKeys: selected, onChange: (keys) => setSelected(keys as string[]), preserveSelectedRowKeys: true }}
         onRow={(record) => ({
           onClick: (event) => {
-            // 点复选框只做勾选，不进入详情
-            if ((event.target as HTMLElement).closest(".ant-table-selection-column, .ant-checkbox-wrapper")) return;
+            if ((event.target as HTMLElement).closest(".ant-table-selection-column, .ant-checkbox-wrapper, button, a")) return;
             navigate("project", record.dir);
           },
           style: { cursor: "pointer" },
         })}
-        locale={{ emptyText: "还没有项目。点右上角「新建项目」，或者「导入历史项目」把 skill 做过的项目接进来。" }}
+        locale={{ emptyText: "还没有项目。点右上角「新建项目」；以前用 skill 做过的项目可以在「设置 → 导入历史项目」里接进来。" }}
         columns={[
           {
             title: "软件名",
@@ -118,9 +212,10 @@ export function ProjectsPage() {
             render: (name: string, record) => (
               <Space direction="vertical" size={0}>
                 <Typography.Text strong>{name}</Typography.Text>
-                <Space size={4}>
+                <Space size={4} wrap>
                   {record.origin === "imported" && record.grade && <Tag color={GRADE_LABEL[record.grade]?.color}>历史 · {GRADE_LABEL[record.grade]?.label}</Tag>}
-                  {!record.hasCodeSource && !record.readOnly && <Tag>未指定代码来源</Tag>}
+                  {record.feedbackPending > 0 && <Tag color="blue">{record.feedbackPending} 条修改意见待处理</Tag>}
+                  {record.pdfFontProblem && <Tag color="orange">PDF 字体不对</Tag>}
                 </Space>
               </Space>
             ),
@@ -129,16 +224,35 @@ export function ProjectsPage() {
             title: "状态",
             dataIndex: "status",
             width: 120,
-            render: (status: string) => <Tag color={PROJECT_STATUS[status]?.color}>{PROJECT_STATUS[status]?.label || status}</Tag>,
+            render: (status: string, record) => {
+              if (status !== "running" && record.queue && QUEUE_LABEL[record.queue.status]) {
+                const info = QUEUE_LABEL[record.queue.status];
+                return <Tag color={info.color}>{info.label}{record.queue.position ? ` #${record.queue.position}` : ""}</Tag>;
+              }
+              return <Tag color={PROJECT_STATUS[status]?.color}>{PROJECT_STATUS[status]?.label || status}</Tag>;
+            },
           },
           {
             title: "进度",
-            width: 220,
+            width: 260,
             render: (_, record) => {
               if (record.readOnly) return <span className="muted">只有交付包，没有源文件</span>;
-              const { done, current } = stepProgress(record);
+              const live = record.progress;
+              if (record.status === "running" && live) {
+                const screens = live.screens && ["images", "gate"].includes(live.step || "") ? ` ${live.screens.finished}/${live.screens.total}` : "";
+                return (
+                  <div>
+                    <Progress percent={livePercent(record)} size="small" showInfo={false} status="active" />
+                    <span className="muted" style={{ fontSize: 12 }}>
+                      {live.step ? STEP_LABELS[live.step] : "准备中"}
+                      {screens} · 已用 {formatDuration(now - live.started)}
+                    </span>
+                  </div>
+                );
+              }
+              const { done, current } = stepSummary(record);
               return (
-                <Tooltip title={record.lastError || (current ? `下一步：${STEP_LABELS[current]}` : "全部完成")}>
+                <Tooltip title={record.lastError || record.queue?.error || (current ? `下一步：${STEP_LABELS[current]}` : "全部完成")}>
                   <span className="muted">
                     {done}/{STEP_ORDER.length}
                     {current ? ` · ${STEP_LABELS[current]}` : " · 完成"}
@@ -147,303 +261,225 @@ export function ProjectsPage() {
               );
             },
           },
-          { title: "截图", dataIndex: "screens", width: 70 },
-          { title: "最近构建", dataIndex: "lastBuildAt", width: 130, render: (value: string) => formatTime(value) },
+          {
+            title: "用时",
+            width: 110,
+            render: (_, record) => {
+              const timing = record.timing;
+              if (!timing) return <span className="muted">—</span>;
+              const main = timing.completedMs ?? timing.totalMs;
+              return (
+                <Tooltip title={`${timing.completedMs ? `完成用时 ${formatDuration(timing.completedMs)}` : "还没完成"}；累计 ${formatDuration(timing.totalMs)}${timing.lastMs ? `；最近一次运行 ${formatDuration(timing.lastMs)}` : ""}`}>
+                  <span className="stat-number">{formatDuration(main)}</span>
+                </Tooltip>
+              );
+            },
+          },
+          {
+            title: "交付",
+            width: 90,
+            render: (_, record) => (record.bundleFiles ? `${record.bundleFiles} 个文件` : record.hasBundle ? "有" : <span className="muted">—</span>),
+          },
+          { title: "最近构建", dataIndex: "lastBuildAt", width: 120, render: (value: string) => formatTime(value) },
           {
             title: "",
-            width: 60,
+            width: 50,
             render: (_, record) => (
               <Tooltip title="在访达中打开">
-                <Button
-                  type="text"
-                  icon={<FolderOpenOutlined />}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    call("openPath", record.dir);
-                  }}
-                />
+                <Button type="text" icon={<FolderOpenOutlined />} onClick={() => call("openPath", record.dir)} />
               </Tooltip>
             ),
           },
         ]}
       />
-      <CreateProjectModal
-        open={createOpen}
-        defaultScreens={settings.data?.settings.pipeline.defaultScreenCount || 7}
-        defaultPlatform={settings.data?.settings.pipeline.platform || ""}
-        defaultExtensions={settings.data?.settings.codeDefaults.extensions || [".java"]}
-        onClose={() => setCreateOpen(false)}
-        onCreated={(dir, runNow) => {
-          setCreateOpen(false);
-          projects.reload();
-          if (runNow) call("run", dir);
-          navigate("project", dir);
-        }}
-      />
-      <CsvModal
-        open={csvOpen}
-        onClose={() => setCsvOpen(false)}
-        onDone={(created, queue) => {
-          setCsvOpen(false);
-          projects.reload();
-          if (queue && created.length) {
-            call("batchEnqueue", created).then(() => navigate("batch"));
-          }
-        }}
-      />
-      <ImportModal
-        open={importOpen}
-        onClose={() => setImportOpen(false)}
-        onImported={(result) => {
-          setImportOpen(false);
-          projects.reload();
-          modal.info({
-            title: "导入完成",
-            content: (
-              <div>
-                <p>导入了 {result.imported.length} 个项目{result.timings ? `，并导入 ${result.timings} 条历史生图耗时记录（用于计算补发线）` : ""}。</p>
-                {result.failed.length > 0 && (
-                  <>
-                    <p>以下项目没有导入：</p>
-                    <ul>
-                      {result.failed.map((line) => (
-                        <li key={line}>{line}</li>
-                      ))}
-                    </ul>
-                  </>
-                )}
-                <p className="muted">导入只是登记，不会改动这些项目文件夹里的任何文件。</p>
-              </div>
-            ),
-          });
-        }}
-      />
+      <ExportModal dirs={exportDirs} lastDir={settings.data?.settings.export?.lastDir || ""} onClose={() => setExportDirs(null)} onDone={() => { setExportDirs(null); setSelected([]); settings.reload(); }} />
     </div>
   );
 }
 
-function CreateProjectModal({ open, onClose, onCreated, defaultScreens, defaultPlatform, defaultExtensions }: { open: boolean; onClose: () => void; onCreated: (dir: string, runNow: boolean) => void; defaultScreens: number; defaultPlatform: string; defaultExtensions: string[] }) {
-  const { message } = App.useApp();
-  const [form] = Form.useForm();
-  const [busy, setBusy] = useState(false);
-  const [codePath, setCodePath] = useState<string>("");
-
-  const submit = async (runNow: boolean) => {
-    const values = await form.validateFields();
-    setBusy(true);
-    try {
-      const dir = await call<string>("createProject", {
-        softwareName: values.softwareName.trim(),
-        versionPolicy: values.versionPolicy,
-        screenCount: values.autoCount ? null : values.screenCount,
-        emphasis: values.emphasis || "",
-        notes: values.notes || "",
-        platform: values.platform || "",
-        wantDesign: values.wantDesign,
-        codeSource: codePath ? { path: codePath, extensions: values.extensions || [".java"] } : null,
-      });
-      form.resetFields();
-      setCodePath("");
-      onCreated(dir, runNow);
-    } catch (error) {
-      message.error((error as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
+function QueueBar({ queue, concurrency, onConcurrency }: { queue: { items: BatchItem[]; paused: boolean } | null; concurrency: number; onConcurrency: (value: number) => void }) {
+  const items = queue?.items || [];
+  const counts = items.reduce<Record<string, number>>((acc, item) => ({ ...acc, [item.status]: (acc[item.status] || 0) + 1 }), {});
+  const unfinished = (counts.running || 0) + (counts.queued || 0) + (counts.paused || 0);
+  if (!items.length) return null;
   return (
-    <Modal
-      title="新建项目"
-      open={open}
-      onCancel={onClose}
-      width={620}
-      footer={[
-        <Button key="cancel" onClick={onClose}>
-          取消
-        </Button>,
-        <Button key="create" loading={busy} onClick={() => submit(false)}>
-          只创建
-        </Button>,
-        <Button key="run" type="primary" loading={busy} onClick={() => submit(true)}>
-          创建并开始
-        </Button>,
-      ]}
-    >
-      <Form form={form} layout="vertical" initialValues={{ versionPolicy: "in-name", screenCount: defaultScreens, autoCount: true, wantDesign: false, extensions: defaultExtensions, platform: defaultPlatform }}>
-        <Form.Item name="softwareName" label="软件名（含版本号，按原样填写）" rules={[{ required: true, message: "请填写软件名" }]} extra="软件名只用于文件名、文档标题和页眉，截图界面里不会出现。">
-          <Input placeholder="例如：云伴日程 V1.0" />
-        </Form.Item>
-        <Space size="large" align="start">
-          <Form.Item name="autoCount" label="截图数" valuePropName="checked">
-            <Checkbox>让大模型按功能决定（默认 7 屏）</Checkbox>
-          </Form.Item>
-          <Form.Item noStyle shouldUpdate={(prev, next) => prev.autoCount !== next.autoCount}>
-            {({ getFieldValue }) =>
-              !getFieldValue("autoCount") && (
-                <Form.Item name="screenCount" label="指定屏数">
-                  <InputNumber min={2} max={15} />
-                </Form.Item>
-              )
-            }
-          </Form.Item>
-        </Space>
-        <Form.Item name="emphasis" label="需要重点体现的功能（可选）">
-          <Input placeholder="例如：违章查询、在线缴费、电子回执" />
-        </Form.Item>
-        <Form.Item name="notes" label="补充说明（可选）">
-          <Input.TextArea rows={2} placeholder="给规划用的额外信息，比如目标用户、风格偏好" />
-        </Form.Item>
-        <Form.Item name="platform" label="平台">
-          <Select options={[{ value: "iPhone 16 Pro Max / iOS 26", label: "iPhone 16 Pro Max / iOS 26" }, { value: "Android 手机（原生 Android 界面）", label: "Android 手机" }]} />
-        </Form.Item>
-        <Form.Item name="versionPolicy" label="版本号处理">
-          <Radio.Group
-            options={[
-              { value: "in-name", label: "版本号是软件名的一部分" },
-              { value: "none", label: "没有版本号" },
-            ]}
-          />
-        </Form.Item>
-        <Form.Item label="代码来源（可选，用于生成代码文档）" extra="选择这个软件自己的源码文件夹或文件。不指定则不生成代码文档，以后也可以在项目的「交付」里补上。">
-          <Space.Compact style={{ width: "100%" }}>
-            <Input value={codePath} placeholder="未指定" readOnly />
-            <Button
-              onClick={async () => {
-                const picked = await call<string | null>("choosePath", "选择代码来源");
-                if (picked) setCodePath(picked);
-              }}
-            >
-              选择…
-            </Button>
-            {codePath && <Button onClick={() => setCodePath("")}>清除</Button>}
-          </Space.Compact>
-        </Form.Item>
-        {codePath && (
-          <Form.Item name="extensions" label="代码文件类型">
-            <Select mode="tags" options={[".java", ".kt", ".swift", ".dart", ".js", ".ts", ".vue", ".py", ".go", ".cs"].map((value) => ({ value, label: value }))} />
-          </Form.Item>
+    <div className="queue-bar">
+      <Typography.Text strong>批量处理</Typography.Text>
+      <span>
+        运行中 <b>{counts.running || 0}</b> · 排队 <b>{counts.queued || 0}</b> · 完成 <b>{counts.done || 0}</b>
+        {(counts.failed || 0) + (counts["needs-attention"] || 0) > 0 && (
+          <Typography.Text type="danger"> · 需处理 {(counts.failed || 0) + (counts["needs-attention"] || 0)}</Typography.Text>
         )}
-        <Form.Item name="wantDesign" label="附加软件设计说明章节" valuePropName="checked">
-          <Switch />
-        </Form.Item>
-      </Form>
-    </Modal>
+        {counts.paused ? ` · 已暂停 ${counts.paused}` : ""}
+      </span>
+      <Space size={6}>
+        同时处理
+        <InputNumber size="small" min={1} max={8} value={concurrency} onChange={(value) => value && onConcurrency(Number(value))} style={{ width: 60 }} />
+        个项目
+      </Space>
+      <Space style={{ marginLeft: "auto" }}>
+        {queue?.paused ? (
+          <Button size="small" type="primary" icon={<CaretRightOutlined />} onClick={() => call("batchResume")}>
+            继续
+          </Button>
+        ) : (
+          unfinished > 0 && (
+            <Button size="small" icon={<PauseOutlined />} onClick={() => call("batchPause")}>
+              暂停全部
+            </Button>
+          )
+        )}
+        <Button size="small" type="text" onClick={() => call("batchClearFinished")}>
+          清除已完成的记录
+        </Button>
+      </Space>
+    </div>
   );
 }
 
-function CsvModal({ open, onClose, onDone }: { open: boolean; onClose: () => void; onDone: (created: string[], queue: boolean) => void }) {
-  const { message } = App.useApp();
-  const [text, setText] = useState("");
-  const [queue, setQueue] = useState(true);
+function ExportModal({ dirs, lastDir, onClose, onDone }: { dirs: string[] | null; lastDir: string; onClose: () => void; onDone: () => void }) {
+  const { message, modal } = App.useApp();
+  const [target, setTarget] = useState("");
+  const [items, setItems] = useState<ExportItem[] | null>(null);
+  const [conflict, setConflict] = useState<"skip" | "overwrite" | null>(null);
   const [busy, setBusy] = useState(false);
-  const submit = async () => {
+  const open = Boolean(dirs);
+
+  const inspect = async (dir: string) => {
+    if (!dirs || !dir) return;
     setBusy(true);
     try {
-      const result = await call<{ created: string[]; errors: string[] }>("createProjectsFromCsv", text, {});
-      if (result.errors.length) message.warning(`有 ${result.errors.length} 行没有创建：${result.errors.slice(0, 3).join("；")}`);
-      message.success(`已创建 ${result.created.length} 个项目`);
-      setText("");
-      onDone(result.created, queue);
+      const plan = await call<{ items: ExportItem[] }>("planExport", dirs, dir);
+      setItems(plan.items);
+      setConflict(null);
     } catch (error) {
       message.error((error as Error).message);
     } finally {
       setBusy(false);
     }
   };
-  return (
-    <Modal title="批量新建项目" open={open} onCancel={onClose} onOk={submit} okText="创建" confirmLoading={busy} width={680}>
-      <Typography.Paragraph className="muted">
-        每行一个项目，用逗号分隔：<b>软件名,截图数,重点功能,代码来源路径,版本处理</b>。只有软件名必填，其余可以留空。第一行如果是表头会自动跳过。
-      </Typography.Paragraph>
-      <Space style={{ marginBottom: 8 }}>
-        <Button
-          onClick={async () => {
-            const content = await call<string | null>("chooseTextFile", "选择 CSV 文件");
-            if (content) setText(content);
-          }}
-        >
-          从文件读取…
-        </Button>
-        <Checkbox checked={queue} onChange={(event) => setQueue(event.target.checked)}>
-          创建后直接加入批量队列
-        </Checkbox>
-      </Space>
-      <Input.TextArea rows={12} value={text} onChange={(event) => setText(event.target.value)} placeholder={"软件名,截图数,重点功能,代码来源路径,版本处理\n云伴日程 V1.0,7,日程提醒,,in-name\n快记账本 V1.0,,预算提醒,/Users/me/code/kuaijizhang,"} className="mono" />
-    </Modal>
-  );
-}
+  useEffect(() => {
+    if (open) {
+      setTarget(lastDir);
+      setItems(null);
+      setConflict(null);
+      if (lastDir) inspect(lastDir);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
-function ImportModal({ open, onClose, onImported }: { open: boolean; onClose: () => void; onImported: (result: { imported: string[]; failed: string[]; timings: number }) => void }) {
-  const { message } = App.useApp();
-  const [rows, setRows] = useState<ScanRow[] | null>(null);
-  const [selected, setSelected] = useState<string[]>([]);
-  const [busy, setBusy] = useState(false);
-  const [scanning, setScanning] = useState(false);
+  const ready = (items || []).filter((item) => item.ok);
+  const conflicts = ready.filter((item) => item.conflict);
+  const skippedUp = (items || []).filter((item) => !item.ok);
 
-  const scan = async (dir?: string) => {
-    setScanning(true);
+  const run = async () => {
+    if (!dirs) return;
+    setBusy(true);
     try {
-      const result = await call<ScanRow[]>("scanWorkspace", dir);
-      setRows(result);
-      setSelected(result.filter((row) => !row.managed && row.grade !== "readonly").map((row) => row.dir));
+      const result = await call<{ exported: { name: string }[]; skipped: { name: string; reason: string }[]; targetDir: string }>("exportBundles", dirs, target, { conflict: conflict || "skip" });
+      onDone();
+      modal.success({
+        title: `已导出 ${result.exported.length} 个项目`,
+        content: (
+          <div>
+            <p className="mono">{result.targetDir}</p>
+            {result.skipped.length > 0 && (
+              <>
+                <p>跳过 {result.skipped.length} 个：</p>
+                <ul style={{ paddingLeft: 18, maxHeight: 220, overflow: "auto" }}>
+                  {result.skipped.map((item) => (
+                    <li key={item.name}>
+                      {item.name}：{item.reason}
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+          </div>
+        ),
+        okText: "在访达中打开",
+        onOk: () => call("openPath", result.targetDir).catch(() => {}),
+        closable: true,
+      });
     } catch (error) {
       message.error((error as Error).message);
     } finally {
-      setScanning(false);
+      setBusy(false);
     }
   };
 
   return (
     <Modal
-      title="导入历史项目"
+      title={`导出交付包（${dirs?.length || 0} 个项目）`}
       open={open}
+      width={760}
       onCancel={onClose}
-      width={860}
-      afterOpenChange={(visible) => visible && !rows && scan()}
-      okText={`导入 ${selected.length} 个`}
+      okText={ready.length ? `导出 ${conflict === "skip" ? ready.length - conflicts.length : ready.length} 个` : "导出"}
+      okButtonProps={{ disabled: !target || !ready.length || (conflicts.length > 0 && !conflict) || (conflict === "skip" && ready.length === conflicts.length) }}
       confirmLoading={busy}
-      onOk={async () => {
-        setBusy(true);
-        try {
-          onImported(await call("importProjects", selected));
-          setRows(null);
-        } catch (error) {
-          message.error((error as Error).message);
-        } finally {
-          setBusy(false);
-        }
-      }}
+      onOk={run}
     >
-      <Typography.Paragraph className="muted">
-        扫描工作区里旧 skill 做过的项目。导入只是在本软件里登记，不复制、不改动项目文件夹。代码文档用的是旧 skill 的固定正文，导入后重建需要另外指定代码来源。
-      </Typography.Paragraph>
-      <Space style={{ marginBottom: 8 }}>
+      <Typography.Paragraph className="muted">每个项目导出成一个文件夹，文件夹名就是项目名，里面是它的交付文件（有代码文档 5 个，没有 3 个）。只复制，不改动原项目。</Typography.Paragraph>
+      <Space.Compact style={{ width: "100%", marginBottom: 12 }}>
+        <Input value={target} readOnly placeholder="选择导出到哪里" />
         <Button
           onClick={async () => {
-            const dir = await call<string | null>("chooseDirectory", "选择要扫描的工作区");
-            if (dir) scan(dir);
+            const dir = await call<string | null>("chooseDirectory", "选择导出位置", target || undefined);
+            if (dir) {
+              setTarget(dir);
+              inspect(dir);
+            }
           }}
         >
-          换个文件夹扫描…
+          选择…
         </Button>
-        <Button onClick={() => rows && setSelected(rows.filter((row) => !row.managed && row.grade === "ready").map((row) => row.dir))}>只选「可直接编辑」</Button>
-      </Space>
-      <Table<ScanRow>
-        rowKey="dir"
-        size="small"
-        loading={scanning}
-        dataSource={rows || []}
-        pagination={{ pageSize: 12, showSizeChanger: false, showTotal: (total) => `共 ${total} 个` }}
-        rowSelection={{ selectedRowKeys: selected, onChange: (keys) => setSelected(keys as string[]), getCheckboxProps: (row) => ({ disabled: row.managed }) }}
-        columns={[
-          { title: "软件名", dataIndex: "name" },
-          { title: "状态", dataIndex: "grade", width: 130, render: (grade: string, row) => (row.managed ? <Tag>已导入</Tag> : <Tag color={GRADE_LABEL[grade]?.color}>{GRADE_LABEL[grade]?.label}</Tag>) },
-          { title: "截图", dataIndex: "screens", width: 60 },
-          { title: "交付包", dataIndex: "hasBundle", width: 80, render: (value: boolean) => (value ? "有" : "—") },
-          { title: "修改时间", dataIndex: "mtime", width: 130, render: (value: number) => formatTime(new Date(value).toISOString()) },
-        ]}
-      />
+      </Space.Compact>
+      {conflicts.length > 0 && (
+        <Alert
+          style={{ marginBottom: 12 }}
+          type="warning"
+          showIcon
+          message={`导出位置已经有 ${conflicts.length} 个同名文件夹：${conflicts.slice(0, 5).map((item) => item.name).join("、")}${conflicts.length > 5 ? " 等" : ""}`}
+          description={
+            <Radio.Group value={conflict} onChange={(event) => setConflict(event.target.value)}>
+              <Space direction="vertical">
+                <Radio value="skip">跳过这些项目，已有的文件夹不动</Radio>
+                <Radio value="overwrite">覆盖：已有的文件夹先移到废纸篓，再导出新的</Radio>
+              </Space>
+            </Radio.Group>
+          }
+        />
+      )}
+      {items && (
+        <Table<ExportItem>
+          rowKey="dir"
+          size="small"
+          dataSource={items}
+          pagination={{ pageSize: 8, showSizeChanger: false }}
+          columns={[
+            { title: "项目", dataIndex: "name" },
+            { title: "文件", width: 70, render: (_, item) => (item.ok ? item.files.length : "—") },
+            {
+              title: "",
+              width: 300,
+              render: (_, item) =>
+                !item.ok ? (
+                  <Tag>跳过：{item.reason}</Tag>
+                ) : (
+                  <Space size={4} wrap>
+                    {item.conflict ? <Tag color="orange">已有同名文件夹</Tag> : <Tag color="green">可导出</Tag>}
+                    {item.warnings.map((warning) => (
+                      <Tooltip key={warning} title={warning}>
+                        <Tag color="gold">{warning.length > 14 ? `${warning.slice(0, 14)}…` : warning}</Tag>
+                      </Tooltip>
+                    ))}
+                  </Space>
+                ),
+            },
+          ]}
+        />
+      )}
+      {items && skippedUp.length > 0 && <Typography.Text className="muted">{skippedUp.length} 个项目不会导出（见上表）。</Typography.Text>}
     </Modal>
   );
 }
@@ -455,9 +491,9 @@ function SetupHint() {
   if (!data) return null;
   const providers = data.settings.providers.filter((provider) => provider.enabled && data.providerKeys[provider.id]);
   const assignments = data.settings.llm.assignments;
-  const missing: { text: string; page: string }[] = [];
-  if (!providers.length) missing.push({ text: "还没有可用的生图线路（需要启用并填好密钥）", page: "providers" });
-  if (!assignments.plan || !assignments.content) missing.push({ text: "还没有给「规划界面」和「撰写说明文字」选择大模型", page: "llm" });
+  const missing: { text: string; page: string; tab: string }[] = [];
+  if (!providers.length) missing.push({ text: "还没有可用的生图线路（需要启用并填好密钥）", page: "models", tab: "providers" });
+  if (!assignments.plan || !assignments.content) missing.push({ text: "还没有给「规划界面」和「撰写说明文字」选择大模型", page: "models", tab: "llm" });
   if (!missing.length) return null;
   return (
     <Alert
@@ -468,8 +504,8 @@ function SetupHint() {
       description={
         <Space direction="vertical" size={2}>
           {missing.map((item) => (
-            <span key={item.page}>
-              {item.text}，<a onClick={() => navigate(item.page)}>去配置</a>
+            <span key={item.tab}>
+              {item.text}，<a onClick={() => navigate(item.page, item.tab)}>去配置</a>
             </span>
           ))}
           {!assignments.gate && <span className="muted">截图验收没有配置看图模型时，需要人工逐张确认截图里没有软件名。</span>}

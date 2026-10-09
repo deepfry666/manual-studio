@@ -1,6 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 import { readJson, writeJsonAtomic, createSerialQueue } from "./util/fsx.mjs";
+import { DEFAULT_PDF_FONTS } from "./build/fonts.mjs";
 
 /** TXT 环境字段默认值与旧 skill 模板逐字一致。 */
 export const DEFAULT_TXT_FIELDS = {
@@ -53,7 +54,7 @@ export function defaultSettings() {
       platform: "iPhone 16 Pro Max / iOS 26",
       reviewPlanSingle: true,
       reviewPlanBatch: false,
-      batchConcurrency: 2,
+      batchConcurrency: 3,
       featureTextFloor: 300,
     },
     txtFields: { ...DEFAULT_TXT_FIELDS },
@@ -61,6 +62,11 @@ export function defaultSettings() {
       extensions: [".java"],
       excludeDirs: ["node_modules", ".git", "build", "dist", "out", "target", ".gradle", ".idea", "Pods", "DerivedData"],
     },
+    // 代码来源只在这里设一次，所有项目共用；项目第一次生成交付包时记下当时用的来源，之后改这里不影响已完成的项目
+    codeSource: { path: "", extensions: [".java"] },
+    // 原版字体没装时 PDF 用哪个系统字体代替
+    pdf: { ...DEFAULT_PDF_FONTS },
+    export: { lastDir: "" },
   };
 }
 
@@ -86,6 +92,8 @@ export function createSettingsStore(dataDir) {
     if (cache) return cache;
     const stored = await readJson(file, {});
     cache = deepMerge(defaultSettings(), stored);
+    // 旧版本把代码文件类型放在 codeDefaults 里
+    if (!stored.codeSource && Array.isArray(stored.codeDefaults?.extensions)) cache.codeSource.extensions = [...stored.codeDefaults.extensions];
     return cache;
   }
 

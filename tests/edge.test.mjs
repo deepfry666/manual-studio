@@ -9,7 +9,7 @@ import { execFileSync } from "node:child_process";
 import { chatJson, extractJson } from "../core/llm/client.mjs";
 import { runAttempt, ProviderError } from "../core/gateway/adapter.mjs";
 import { newProviderFromPreset, PROVIDER_PRESETS } from "../core/gateway/presets.mjs";
-import { parseBatchCsv } from "../core/batch.mjs";
+import { parseBatchList } from "../core/batch.mjs";
 import { collectCodeSource } from "../core/code-source.mjs";
 import { createCore } from "../core/index.mjs";
 import { startMockRelay } from "./helpers/mock-relay.mjs";
@@ -127,14 +127,15 @@ test("中转站返回 JPEG 时转成 PNG 再验收", async (t) => {
   assert.equal(check.png.subarray(1, 4).toString(), "PNG");
 });
 
-test("CSV：表头、中文逗号、引号、制表符、空行、非法屏数", () => {
-  const rows = parseBatchCsv('﻿软件名,截图数,重点功能\n"云伴日程, 专业版 V1.0",7,日程提醒\n\n快记账本 V1.0，abc，预算\n办公助手 V2\t5\t审批\t/Users/x/code\tnone\n');
-  assert.equal(rows.length, 3);
-  assert.deepEqual(rows[0], { softwareName: "云伴日程, 专业版 V1.0", screenCount: 7, emphasis: "日程提醒", codeSourcePath: "", versionPolicy: "in-name" });
+test("批量新建列表：每行一个软件名，也可以带逗号分隔的列（表头、中文逗号、引号、制表符、空行、非法屏数）", () => {
+  const rows = parseBatchList('\uFEFF软件名,截图数,重点功能\n"云伴日程, 专业版 V1.0",7,日程提醒\n\n快记账本 V1.0，abc，预算\n办公助手 V2\t5\t审批\t/Users/x/code\n只有名字 V3.1\n');
+  assert.equal(rows.length, 4);
+  assert.deepEqual(rows[0], { softwareName: "云伴日程, 专业版 V1.0", screenCount: 7, emphasis: "日程提醒", notes: "" });
   assert.equal(rows[1].screenCount, null);
   assert.equal(rows[1].emphasis, "预算");
-  assert.equal(rows[2].codeSourcePath, "/Users/x/code");
-  assert.equal(rows[2].versionPolicy, "none");
+  // 旧格式第 4 列的代码来源路径不再使用（代码来源统一在设置里），也不会被当成补充说明
+  assert.equal(rows[2].notes, "");
+  assert.deepEqual(rows[3], { softwareName: "只有名字 V3.1", screenCount: null, emphasis: "", notes: "" });
 });
 
 test("代码来源：跳过二进制和排除目录，去掉 BOM，统一换行，按路径排序", async () => {

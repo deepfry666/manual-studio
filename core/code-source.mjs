@@ -1,5 +1,6 @@
 import fsp from "node:fs/promises";
 import path from "node:path";
+import crypto from "node:crypto";
 
 const MAX_FILES = 5000;
 const MAX_TOTAL_BYTES = 30 * 1024 * 1024;
@@ -70,6 +71,8 @@ export async function collectCodeSource(source, { excludeDirs = [] } = {}) {
     nonEmptyLines,
     bytes,
     body,
+    // 代码正文指纹：写进生成记录，可以核对交付包里的代码文档用的是哪一版代码
+    sha256: crypto.createHash("sha256").update(body).digest("hex"),
     warnings,
     // 现有代码文档格式（新宋体 9pt、A4）实测每页约 45 行，只作页数估算
     estimatedPages: Math.ceil(lineCount / 45),

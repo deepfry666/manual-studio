@@ -10,12 +10,14 @@ import { createHealthStore } from "./gateway/health.mjs";
 import { createImageGateway } from "./gateway/gateway.mjs";
 import { PROVIDER_PRESETS, newProviderFromPreset } from "./gateway/presets.mjs";
 import { createProjectStore, newState, projectPaths, readPlan, listAlternates } from "./pipeline/project.mjs";
-import { createPipeline, STEP_LABELS } from "./pipeline/runner.mjs";
-import { createBatchQueue, parseBatchCsv } from "./batch.mjs";
+import { createPipeline, STEP_LABELS, codeSourceFor, detectVersion, formatDuration } from "./pipeline/runner.mjs";
+import { createBatchQueue, parseBatchList } from "./batch.mjs";
 import { scanWorkspace, inspectProject, createImportedState, importLegacyTimings, importLegacyProviders } from "./importer.mjs";
 import { collectCodeSource } from "./code-source.mjs";
 import { assertSafeSoftwareName } from "./build/build.mjs";
 import { findLibreOffice, resetLibreOfficeCache } from "./build/runtime.mjs";
+import { DOC_FONTS, SUBSTITUTES, SUBSTITUTE_CHOICES, installedFontFamilies, resolveFontPlan, installFontFiles } from "./build/fonts.mjs";
+import { planExport, exportBundles } from "./export.mjs";
 import { LLM_PRESETS, listModels, chatCompletion } from "./llm/client.mjs";
 import { readJson, writeJsonAtomic, createSerialQueue, exists } from "./util/fsx.mjs";
 import { solidPng } from "./util/png.mjs";
@@ -28,7 +30,7 @@ function newId(prefix) {
  * 组装所有核心服务。Electron 主进程和测试都通过它使用核心功能。
  * options: { dataDir, cipher（safeStorage 加密器，测试可省略）, toPng, visionImage, fetchImpl, onEvent }
  */
-export async function createCore({ dataDir, cipher, toPng, visionImage, fetchImpl = fetch, onEvent = () => {} }) {
+export async function createCore({ dataDir, cipher, toPng, visionImage, fetchImpl = fetch, onEvent = () => {}, trashItem = null }) {
   await fsp.mkdir(dataDir, { recursive: true });
   const emit = (event) => {
     try {
@@ -57,10 +59,15 @@ export async function createCore({ dataDir, cipher, toPng, visionImage, fetchImp
     callLog,
     fetchImpl,
     toPng,
-    onEvent: (event) => emit({ ...event, kind: event.type, type: "image" }),
+    onEvent: (event) => {
+      pipelineRef?.onImageEvent(event);
+      emit({ ...event, kind: event.type, type: "image" });
+    },
   });
+  let pipelineRef = null;
   const appVersion = (await readJson(new URL("../package.json", import.meta.url), {}).catch(() => ({}))).version || "";
-  const pipeline = createPipeline({ settingsStore, secrets, gateway, projectStore, llmLog, emit, fetchImpl, visionImage, appVersion });
+  const pipeline = createPipeline({ settingsStore, secrets, gateway, projectStore, llmLog, emit, fetchImpl, visionImage, appVersion, statsFile: path.join(dataDir, "step-durations.json") });
+  pipelineRef = pipeline;
   const batch = createBatchQueue({ dataDir, settingsStore, pipeline, emit });
 
   // 项目索引：工作区里由本软件管理的项目
@@ -77,10 +84,12 @@ export async function createCore({ dataDir, cipher, toPng, visionImage, fetchImp
 
   callLog.onAppend((row) => emit({ type: "call", row }));
 
-  async function summarize(entry) {
+  async function summarize(entry, settings, queueByDir) {
     const state = await projectStore.read(entry.dir);
     if (!state) return null;
     const alive = await exists(entry.dir);
+    const queued = queueByDir?.get(entry.dir) || null;
+    const live = pipeline.getProgress(entry.dir);
     return {
       dir: entry.dir,
       name: state.request.softwareName,
@@ -90,13 +99,40 @@ export async function createCore({ dataDir, cipher, toPng, visionImage, fetchImp
       status: !alive ? "missing" : state.readOnly ? "readonly" : pipeline.isRunning(entry.dir) ? "running" : state.status,
       steps: Object.fromEntries(PIPELINE_STEPS.map((step) => [step, state.steps[step]?.status || "pending"])),
       screens: Object.keys(state.screens).length || state.request.screenCount || 0,
-      hasCodeSource: Boolean(state.request.codeSource?.path),
+      hasCodeSource: Boolean(codeSourceFor(state, settings).source?.path),
+      hasBundle: Boolean(state.lastBuild) || state.origin === "imported",
+      bundleFiles: state.lastBuild?.files?.length || null,
+      pdfFontProblem: Object.values(state.lastBuild?.pdfFonts || {}).some((font) => font && font.ok === false),
+      timing: state.timing ? { totalMs: state.timing.totalMs, completedMs: state.timing.completedMs || null, completedAt: state.timing.completedAt || null, lastMs: state.timing.runs?.at(-1)?.ms || null } : null,
+      queue: queued ? { id: queued.id, status: queued.status, position: queued.position, error: queued.error || null } : null,
+      progress: live ? { step: live.step, started: live.started, stepStarted: live.stepStarted, screens: summarizeScreens(live.screens), detail: live.detail } : null,
+      feedbackPending: (state.feedback || []).filter((item) => item.status === "pending").length,
       lastBuildAt: state.lastBuild?.at || null,
       lastError: state.lastError || null,
       warnings: state.warnings?.length || 0,
       addedAt: entry.addedAt,
       updatedAt: state.log?.at(-1)?.at || entry.addedAt,
     };
+  }
+
+  function summarizeScreens(screens = {}) {
+    const values = Object.values(screens).filter((screen) => screen.status !== "kept");
+    if (!values.length) return null;
+    const finished = values.filter((screen) => ["generated", "passed"].includes(screen.status)).length;
+    return { total: values.length, finished, failed: values.filter((screen) => screen.status === "failed").length };
+  }
+
+  async function queueIndex() {
+    const { items } = await batch.list();
+    const map = new Map();
+    let position = 0;
+    for (const item of items) {
+      if (item.status === "queued") position += 1;
+      const previous = map.get(item.projectDir);
+      // 同一项目在队列里有多条时，以「排队/运行中」的那条为准
+      if (!previous || ["queued", "running"].includes(item.status)) map.set(item.projectDir, { ...item, position: item.status === "queued" ? position : null });
+    }
+    return map;
   }
 
   const api = {
@@ -110,9 +146,12 @@ export async function createCore({ dataDir, cipher, toPng, visionImage, fetchImp
       return { settings, providerKeys, vendorKeys, presets: { image: PROVIDER_PRESETS, llm: LLM_PRESETS }, llmSteps: LLM_STEPS, steps: PIPELINE_STEPS, stepLabels: STEP_LABELS };
     },
     async updateSettings(patch) {
-      const allowed = ["workspaceDir", "image", "pipeline", "txtFields", "codeDefaults"];
+      const allowed = ["workspaceDir", "image", "pipeline", "txtFields", "codeDefaults", "codeSource", "pdf", "export"];
       const filtered = Object.fromEntries(Object.entries(patch).filter(([key]) => allowed.includes(key)));
-      return settingsStore.update(filtered);
+      const next = await settingsStore.update(filtered);
+      // 调大「同时处理几个项目」后马上补上排队的项目
+      if (filtered.pipeline) batch.kick();
+      return next;
     },
     async libreOfficeStatus() {
       resetLibreOfficeCache();
@@ -223,9 +262,13 @@ export async function createCore({ dataDir, cipher, toPng, visionImage, fetchImp
     // ---------- 项目 ----------
     async listProjects() {
       const index = await readIndex();
-      const rows = await Promise.all(index.projects.map((entry) => summarize(entry).catch(() => null)));
+      const settings = await settingsStore.get();
+      const queueByDir = await queueIndex();
+      const rows = await Promise.all(index.projects.map((entry) => summarize(entry, settings, queueByDir).catch(() => null)));
       return rows.filter(Boolean);
     },
+    getProgress: (dir) => pipeline.getProgress(dir),
+    stepEstimates: () => pipeline.stepEstimates(),
     async getProject(dir) {
       const state = await projectStore.read(dir);
       if (!state) throw new Error("项目不存在");
@@ -252,7 +295,9 @@ export async function createCore({ dataDir, cipher, toPng, visionImage, fetchImp
       } catch {
         // 还没有交付包
       }
-      return { dir, state, plan, content, screens, bundleDir, bundleFiles, running: pipeline.isRunning(dir) };
+      const settings = await settingsStore.get();
+      const code = codeSourceFor(state, settings);
+      return { dir, state, plan, content, screens, bundleDir, bundleFiles, running: pipeline.isRunning(dir), progress: pipeline.getProgress(dir), codeSource: { ...code, global: settings.codeSource?.path ? settings.codeSource : null } };
     },
     async createProject(request) {
       const settings = await settingsStore.get();
@@ -265,29 +310,32 @@ export async function createCore({ dataDir, cipher, toPng, visionImage, fetchImp
         if (info) throw new Error(`工作区里已经有「${softwareName}」这个项目，请用「导入历史项目」或换个名字`);
       }
       await fsp.mkdir(dir, { recursive: true });
-      const state = newState({ ...request, softwareName });
+      // 版本号自动判断；代码来源用总设置里的（第一次生成交付包时记下来）
+      const versionPolicy = request.versionPolicy === "separate-metadata" ? "separate-metadata" : detectVersion(softwareName) ? "in-name" : "none";
+      const state = newState({ ...request, softwareName, versionPolicy, codeSource: null });
       await projectStore.write(dir, state);
       await updateIndex((index) => {
         if (!index.projects.some((entry) => entry.dir === dir)) index.projects.unshift({ dir, addedAt: new Date().toISOString(), origin: "created" });
       });
       return dir;
     },
-    async createProjectsFromCsv(text, defaults = {}) {
-      const rows = parseBatchCsv(text);
+    /** 批量新建：每行一个软件名，可选用逗号带上 截图数、重点功能、补充说明。 */
+    async createProjectsFromList(text, defaults = {}) {
+      const rows = parseBatchList(text);
+      if (!rows.length) throw new Error("没有读到软件名（每行一个）");
       const created = [];
       const errors = [];
+      const seen = new Set();
       for (const row of rows) {
         try {
-          if (row.codeSourcePath) {
-            if (!path.isAbsolute(row.codeSourcePath)) throw new Error("代码来源要写完整路径（以 / 开头）");
-            if (!(await exists(row.codeSourcePath))) throw new Error(`代码来源不存在：${row.codeSourcePath}`);
-          }
+          if (seen.has(row.softwareName)) throw new Error("列表里重复了");
+          seen.add(row.softwareName);
           const dir = await api.createProject({
             softwareName: row.softwareName,
             screenCount: row.screenCount || defaults.screenCount || null,
             emphasis: row.emphasis,
-            versionPolicy: row.versionPolicy,
-            codeSource: row.codeSourcePath ? { path: row.codeSourcePath, extensions: defaults.extensions || [".java"] } : null,
+            notes: row.notes,
+            platform: defaults.platform || "",
             wantDesign: Boolean(defaults.wantDesign),
           });
           created.push(dir);
@@ -354,6 +402,46 @@ export async function createCore({ dataDir, cipher, toPng, visionImage, fetchImp
     run: (dir, options = {}) => pipeline.run(dir, options),
     cancel: (dir) => pipeline.cancel(dir),
     actions: pipeline.actions,
+    // ---------- 导出 ----------
+    async planExport(dirs, targetDir) {
+      return planExport({ dirs, targetDir, projectStore });
+    },
+    async exportBundles(dirs, targetDir, options = {}) {
+      for (const dir of dirs) if (pipeline.isRunning(dir)) throw new Error(`「${path.basename(dir)}」正在运行，等它跑完再导出`);
+      const result = await exportBundles({ dirs, targetDir, projectStore, conflict: options.conflict || "skip", trashItem });
+      await settingsStore.update({ export: { lastDir: targetDir } });
+      return result;
+    },
+
+    // ---------- PDF 与字体 ----------
+    async fontStatus() {
+      const settings = await settingsStore.get();
+      const families = await installedFontFamilies({ refresh: true });
+      const plan = await resolveFontPlan(settings.pdf, { families });
+      return {
+        detected: Boolean(families),
+        docs: Object.fromEntries(Object.entries(DOC_FONTS).map(([kind, doc]) => [kind, { label: doc.label, original: doc.original, installed: plan[kind].mode === "original", using: plan[kind].label, choice: settings.pdf?.[kind], choices: SUBSTITUTE_CHOICES[kind].map((key) => ({ value: key, label: SUBSTITUTES[key].label })) }])),
+      };
+    },
+    installFonts: (files) => installFontFiles(files),
+    /** 批量只重导 PDF（一个个来；LibreOffice 本来就排队）。 */
+    async reexportPdfs(dirs) {
+      const done = [];
+      const failed = [];
+      for (const [index, dir] of dirs.entries()) {
+        emit({ type: "pdf-reexport", current: dir, index, total: dirs.length });
+        try {
+          const result = await pipeline.actions.reexportPdfs(dir);
+          done.push({ dir, warnings: result.warnings });
+        } catch (error) {
+          failed.push(`${path.basename(dir)}：${error.message}`);
+        }
+      }
+      emit({ type: "pdf-reexport", current: null, index: dirs.length, total: dirs.length });
+      return { done, failed };
+    },
+    formatDuration,
+
     async inspectCodeSource(source) {
       const settings = await settingsStore.get();
       const result = await collectCodeSource(source, { excludeDirs: settings.codeDefaults.excludeDirs });

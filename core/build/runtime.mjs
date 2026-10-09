@@ -5,6 +5,7 @@ import fsp from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { fontRegistryXml, substitutionAttempts, judgePdfFonts, pdfFontNames, rememberWorkingName } from "./fonts.mjs";
 
 const require = createRequire(import.meta.url);
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -62,15 +63,20 @@ export function resetLibreOfficeCache() {
 }
 
 let pdfQueue = Promise.resolve();
-/** DOCX → PDF。LibreOffice 同时开多个容易出错，这里排队一个个转。 */
-export function convertToPdf(docxPath, outDir) {
+/**
+ * DOCX → PDF。LibreOffice 同时开多个容易出错，这里排队一个个转。
+ * fontPairs：这次转换用的字体替换表（写进临时配置目录，不影响平时使用的 LibreOffice）。
+ */
+export function convertToPdf(docxPath, outDir, { fontPairs = [] } = {}) {
   const job = pdfQueue.then(async () => {
     const soffice = await findLibreOffice();
     if (!soffice) throw new Error("没有找到 LibreOffice");
     const pdfPath = path.join(outDir, `${path.basename(docxPath, path.extname(docxPath))}.pdf`);
     await fsp.rm(pdfPath, { force: true });
     const profile = await fsp.mkdtemp(path.join(os.tmpdir(), "manual-studio-lo-"));
-    const profileUri = `file:///${profile.replace(/\\/g, "/").replace(/ /g, "%20")}`;
+    await fsp.mkdir(path.join(profile, "user"), { recursive: true });
+    await fsp.writeFile(path.join(profile, "user", "registrymodifications.xcu"), fontRegistryXml(fontPairs), "utf8");
+    const profileUri = `file:///${profile.replace(/\\/g, "/").replace(/^\/+/, "").replace(/ /g, "%20")}`;
     const args = ["--headless", "--nologo", "--nodefault", "--nolockcheck", `-env:UserInstallation=${profileUri}`, "--convert-to", "pdf", "--outdir", outDir, docxPath];
     try {
       for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -85,6 +91,25 @@ export function convertToPdf(docxPath, outDir) {
   });
   pdfQueue = job.catch(() => {});
   return job;
+}
+
+/**
+ * 转 PDF 并核对字体：按替换方案依次尝试（中文系统和英文系统里字体名不一样），
+ * 第一个核对通过的就用；都不通过时保留最后一次的结果并说明用了什么字体。
+ */
+export async function convertToPdfChecked(docxPath, outDir, kind, fontPlan) {
+  const attempts = substitutionAttempts(kind, fontPlan?.[kind]);
+  let last = null;
+  for (const attempt of attempts) {
+    const pdfPath = await convertToPdf(docxPath, outDir, { fontPairs: attempt.pairs });
+    const verdict = judgePdfFonts(await pdfFontNames(pdfPath), attempt);
+    last = { pdfPath, ...verdict, intended: attempt.name, mode: fontPlan?.[kind]?.mode || "original" };
+    if (verdict.ok) {
+      rememberWorkingName(attempt.key, attempt.name);
+      return last;
+    }
+  }
+  return last;
 }
 
 /** 粗略统计 PDF 页数（LibreOffice 生成的 PDF 页对象不压缩，可以直接数）。 */

@@ -1,25 +1,24 @@
 import { Alert, Button, Layout, Menu, Space } from "antd";
-import { AppstoreOutlined, HistoryOutlined, PictureOutlined, RobotOutlined, SettingOutlined, UnorderedListOutlined } from "@ant-design/icons";
+import { ApiOutlined, AppstoreOutlined, PlusCircleOutlined, SettingOutlined } from "@ant-design/icons";
 import { navigate, useHashRoute, useLoader, useStudioEvents } from "./hooks";
 import { call } from "./api";
 import { ProjectsPage } from "./pages/Projects";
 import { ProjectDetailPage } from "./pages/project/ProjectDetail";
-import { BatchPage } from "./pages/Batch";
-import { ProvidersPage } from "./pages/Providers";
-import { LlmPage } from "./pages/Llm";
-import { CallsPage } from "./pages/Calls";
+import { NewProjectPage } from "./pages/NewProject";
+import { ModelsPage } from "./pages/Models";
 import { SettingsPage } from "./pages/Settings";
 
 const { Sider, Content } = Layout;
 
 const MENU = [
   { key: "projects", icon: <AppstoreOutlined />, label: "项目" },
-  { key: "batch", icon: <UnorderedListOutlined />, label: "批量队列" },
-  { key: "providers", icon: <PictureOutlined />, label: "生图线路" },
-  { key: "llm", icon: <RobotOutlined />, label: "大模型" },
-  { key: "calls", icon: <HistoryOutlined />, label: "调用记录" },
+  { key: "new", icon: <PlusCircleOutlined />, label: "新建项目" },
+  { key: "models", icon: <ApiOutlined />, label: "模型与线路" },
   { key: "settings", icon: <SettingOutlined />, label: "设置" },
 ];
+
+/** 旧地址兼容：生图线路 / 大模型 / 调用记录 并进了「模型与线路」，批量队列并进了「项目」。 */
+const LEGACY_MODEL_TABS: Record<string, string> = { providers: "providers", llm: "llm", calls: "calls" };
 
 interface PendingJob {
   jobId: string;
@@ -34,7 +33,7 @@ export function App() {
   useStudioEvents((event) => {
     if (event.type === "image" && ["job-failed", "winner", "job-recovered"].includes(String(event.kind))) pending.reload();
   });
-  const selected = route.page === "project" ? "projects" : route.page;
+  const selected = route.page === "project" || route.page === "batch" ? "projects" : LEGACY_MODEL_TABS[route.page] ? "models" : route.page;
   const unknown = (pending.data || []).filter((job) => job.state === "needs-attention");
 
   let page;
@@ -42,20 +41,19 @@ export function App() {
     case "project":
       page = <ProjectDetailPage dir={route.param} />;
       break;
-    case "batch":
-      page = <BatchPage />;
+    case "new":
+      page = <NewProjectPage />;
+      break;
+    case "models":
+      page = <ModelsPage tab={route.param} />;
       break;
     case "providers":
-      page = <ProvidersPage />;
-      break;
     case "llm":
-      page = <LlmPage />;
-      break;
     case "calls":
-      page = <CallsPage />;
+      page = <ModelsPage tab={LEGACY_MODEL_TABS[route.page]} />;
       break;
     case "settings":
-      page = <SettingsPage />;
+      page = <SettingsPage tab={route.param} />;
       break;
     default:
       page = <ProjectsPage />;

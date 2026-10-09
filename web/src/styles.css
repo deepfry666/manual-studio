@@ -130,3 +130,52 @@ body {
   display: block;
   margin: 0 auto;
 }
+
+/* 嵌在「模型与线路」标签页里的页面：去掉外边距和重复的标题 */
+.embedded > .page {
+  padding: 0;
+  max-width: none;
+}
+
+.embedded .page-header {
+  justify-content: flex-end;
+}
+
+.embedded .page-header h2 {
+  display: none;
+}
+
+.queue-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  background: #fff;
+  border: 1px solid #eceef2;
+  border-radius: 8px;
+}
+
+.live-screens {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px;
+}
+
+.live-screen {
+  border: 1px solid #eceef2;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  background: #fafbfc;
+}
+
+.live-screen b {
+  font-weight: 600;
+}
+
+.feedback-list .ant-list-item {
+  padding: 6px 0;
+}

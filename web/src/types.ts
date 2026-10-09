@@ -44,6 +44,9 @@ export interface Settings {
   pipeline: { defaultScreenCount: number; platform: string; reviewPlanSingle: boolean; reviewPlanBatch: boolean; batchConcurrency: number; featureTextFloor: number };
   txtFields: Record<string, string>;
   codeDefaults: { extensions: string[]; excludeDirs: string[] };
+  codeSource: { path: string; extensions: string[] };
+  pdf: { guide: string; code: string };
+  export: { lastDir: string };
 }
 
 export interface SettingsBundle {
@@ -81,6 +84,13 @@ export interface ProjectSummary {
   steps: Record<StepName, StepStatus>;
   screens: number;
   hasCodeSource: boolean;
+  hasBundle: boolean;
+  bundleFiles: number | null;
+  pdfFontProblem: boolean;
+  timing: { totalMs: number; completedMs: number | null; completedAt: string | null; lastMs: number | null } | null;
+  queue: { id: string; status: BatchItem["status"]; position: number | null; error: string | null } | null;
+  progress: { step: StepName | null; started: number; stepStarted: number | null; screens: { total: number; finished: number; failed: number } | null; detail: string | null } | null;
+  feedbackPending: number;
   lastBuildAt: string | null;
   lastError: string | null;
   warnings: number;
@@ -138,6 +148,72 @@ export interface ProjectRequest {
   compileDate: string;
   createdAt: string;
   allowDropCodeDoc?: boolean;
+  codeSourceLocked?: boolean;
+}
+
+export interface FeedbackItem {
+  id: string;
+  text: string;
+  at: string;
+  status: "pending" | "done";
+  doneAt?: string;
+  appliedAs?: string;
+}
+
+export interface FeedbackAction {
+  key: string;
+  type: "image" | "text" | "overview" | "design" | "replan";
+  target: string;
+  targetLabel: string;
+  instruction: string;
+  items: string[];
+}
+
+export interface FeedbackPlan {
+  createdAt: string;
+  summary: string;
+  itemIds: string[];
+  actions: FeedbackAction[];
+  questions: { question: string; items: string[] }[];
+}
+
+export interface RunTiming {
+  startedAt: string;
+  finishedAt: string;
+  ms: number;
+  status: string;
+  steps: Partial<Record<StepName, number>>;
+  reason: string | null;
+}
+
+export interface LiveScreen {
+  status: "waiting" | "kept" | "generating" | "regenerating" | "generated" | "failed" | "waiting-check" | "checking" | "passed";
+  startedAt?: number;
+  finishedAt?: number | null;
+  provider?: string | null;
+  hedged?: boolean;
+  attempts?: number;
+  gateRounds?: number;
+  error?: string;
+}
+
+export interface LiveProgress {
+  startedAt: string;
+  started: number;
+  step: StepName | null;
+  stepStarted: number | null;
+  plannedSteps: StepName[];
+  doneSteps: StepName[];
+  screens: Record<string, LiveScreen>;
+  detail: string | null;
+  reason: string | null;
+}
+
+export interface PdfFontResult {
+  ok: boolean;
+  intended: string;
+  mode: string;
+  fonts: string[];
 }
 
 export interface ProjectState {
@@ -151,7 +227,10 @@ export interface ProjectState {
   readOnly?: boolean;
   imported?: { grade: string };
   lastError?: string | null;
-  lastBuild?: { at: string; files: string[]; withPdf: boolean; withCode: boolean; code: { fileCount: number; lineCount: number; estimatedPages: number } | null; pdfPages: number | null; warnings: string[] };
+  lastBuild?: { at: string; files: string[]; withPdf: boolean; withCode: boolean; code: { fileCount: number; lineCount: number; estimatedPages: number } | null; pdfPages: number | null; pdfFonts?: Record<string, PdfFontResult>; warnings: string[] };
+  timing?: { totalMs: number; completedMs?: number; completedAt?: string; runs: RunTiming[] };
+  feedback?: FeedbackItem[];
+  feedbackPlan?: FeedbackPlan | null;
 }
 
 export interface ProjectDetail {
@@ -163,6 +242,24 @@ export interface ProjectDetail {
   bundleDir: string;
   bundleFiles: string[];
   running: boolean;
+  progress: LiveProgress | null;
+  codeSource: { source: { path: string; extensions: string[] } | null; locked: boolean; global: { path: string; extensions: string[] } | null };
+}
+
+export interface ExportItem {
+  dir: string;
+  name: string;
+  folder: string;
+  files: string[];
+  ok: boolean;
+  reason: string | null;
+  conflict: boolean;
+  warnings: string[];
+}
+
+export interface FontStatus {
+  detected: boolean;
+  docs: Record<string, { label: string; original: string; installed: boolean; using: string; choice: string; choices: { value: string; label: string }[] }>;
 }
 
 export interface CallRow {

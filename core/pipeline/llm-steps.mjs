@@ -191,21 +191,25 @@ export const CONTENT_SYSTEM = `你是中文软件用户手册撰写专家，为�
 5. 不要说这是虚构、示例或假想的软件；不要提到截图、AI、生成。
 6. 简体中文，可分 1–3 段（用换行分隔）。title 用计划里的界面标题，除非截图标题明显不同。`;
 
-export function contentUserPrompt({ softwareName, profile, screens, inventories, needOverview, existingOverview, floor }) {
+export function contentUserPrompt({ softwareName, profile, screens, inventories, needOverview, existingOverview, floor, instructions = {}, currentTexts = {} }) {
   const blocks = screens.map((screen) => {
     const inventory = inventories[screen.id];
+    const instruction = instructions[screen.id];
     return [
       `【${screen.id}｜${screen.title}】`,
       `计划：入口=${screen.textContract?.entry}；操作=${screen.textContract?.action}；反馈=${screen.textContract?.feedback}；异常=${screen.textContract?.exception}；去向=${screen.textContract?.exit}`,
       `应包含：${(screen.mustShow || []).join("、")}`,
       `示例数据：${(screen.sampleData || []).join("、")}`,
       inventory ? `截图实际内容：${inventory}` : "截图实际内容：（未做看图对账，按计划写，避免写过细的数值）",
-    ].join("\n");
+      instruction ? `用户修改要求（必须照做）：${instruction}` : "",
+      instruction && currentTexts[screen.id] ? `当前正文（在此基础上按要求修改，没提到的内容尽量保留）：${currentTexts[screen.id]}` : "",
+    ].filter(Boolean).join("\n");
   });
   return [
     `软件名：${softwareName}`,
     `领域：${profile?.domain || ""}；目标用户：${profile?.targetUser || ""}；核心流程：${profile?.coreFlow || ""}`,
     needOverview ? "需要输出 overview（封面介绍）。" : `封面介绍已确定，不需要输出 overview：${existingOverview || ""}`,
+    needOverview && instructions.overview ? `封面介绍修改要求（必须照做）：${instructions.overview}${existingOverview ? `\n当前封面介绍（在此基础上修改）：${existingOverview}` : ""}` : "",
     `功能说明每屏至少 ${floor} 个字符。`,
     "",
     ...blocks,
@@ -256,14 +260,16 @@ export const DESIGN_SYSTEM = `你为中文软件用户手册撰写「软件设�
 5. 数据结构设计：核心实体、标识、关系、状态字段、时间戳、保留策略。
 每节 250–600 字，可用换行分段；不要出现「图N」字样，不要说软件是虚构的。`;
 
-export function designUserPrompt({ softwareName, profile, features, screens }) {
+export function designUserPrompt({ softwareName, profile, features, screens, instruction, current }) {
   return [
     `软件名：${softwareName}`,
     `领域：${profile?.domain}；目标用户：${profile?.targetUser}；核心流程：${profile?.coreFlow}`,
     `功能：${features.map((feature) => feature.name).join("、")}`,
     `界面：${screens.map((screen) => `${screen.title}（${screen.textContract?.action || ""}）`).join("；")}`,
+    instruction ? `用户修改要求（必须照做）：${instruction}` : "",
+    instruction && current ? `当前设计说明（在此基础上修改）：\n${current}` : "",
     '输出 JSON：{"sections":[{"title":"软件基本处理流程","text":""}]}',
-  ].join("\n");
+  ].filter(Boolean).join("\n");
 }
 
 export function designCheck(result) {
@@ -272,4 +278,100 @@ export function designCheck(result) {
     if (hasFigureReference(`${section.title}${section.text}`)) problems.push(`「${section.title}」里出现了「图N」字样`);
   }
   return problems;
+}
+
+// ---------------- 修改意见：整理 ----------------
+
+export const FEEDBACK_TYPES = ["image", "text", "overview", "design", "replan"];
+
+export const FEEDBACK_SCHEMA = {
+  type: "object",
+  required: ["summary", "actions", "questions"],
+  properties: {
+    summary: { type: "string" },
+    actions: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["type", "target", "instruction", "items"],
+        properties: {
+          type: { type: "string", enum: FEEDBACK_TYPES },
+          target: { type: "string" },
+          instruction: { type: "string", minLength: 2 },
+          items: { type: "array", items: { type: "integer" } },
+        },
+      },
+    },
+    questions: {
+      type: "array",
+      items: { type: "object", required: ["question", "items"], properties: { question: { type: "string" }, items: { type: "array", items: { type: "integer" } } } },
+    },
+  },
+};
+
+export const FEEDBACK_SYSTEM = `你负责把用户对一个《软件用户手册》项目提的多条修改意见整理成具体的修改动作。手册由若干张手机 App 截图和每张图的说明文字组成，图N 就是第 N 张截图。
+动作类型：
+- image：要改截图画面本身（颜色、布局、控件、图上的文字和数据、风格）。target 写 screen-XX；所有截图都要改时 target 写 all。图改了以后，这一屏的说明会自动按新图重写，不需要再加 text 动作，除非用户对文字另有要求。
+- text：只改某一屏的说明文字（内容侧重、补充什么、删掉什么、措辞），不改图。target 写 screen-XX。
+- overview：改封面介绍。target 写 overview。
+- design：改「软件设计说明」章节。target 写 design。
+- replan：要增加或删除界面、改屏数、整体换功能方向。target 写 all。有 replan 时所有截图和说明都会重做，不要再给其他屏单独出 image / text 动作。
+规则：
+1. 同一屏、同一类型只出一个动作；多条意见说的是同一屏同一件事时合并，instruction 里把要求写全。
+2. instruction 用中文，写清楚改什么、怎么改，以及哪些保持不变；不要扩大用户没提到的修改范围。
+3. items 写这个动作来自哪几条意见（意见编号）。每条意见至少出现在一个动作或一个问题里。
+4. 说不清改哪一屏、意见之间互相矛盾、或者需要用户做决定的，放进 questions，不要猜。
+5. summary 用一两句话概括这次要改什么。`;
+
+export function feedbackUserPrompt({ softwareName, screens, overview, hasDesign, items }) {
+  return [
+    `软件名：${softwareName}`,
+    "当前截图：",
+    ...screens.map((screen) => `- ${screen.figure}（${screen.id}）「${screen.title}」${screen.inventory ? `；画面：${screen.inventory}` : screen.visual ? `；画面计划：${screen.visual}` : ""}${screen.text ? `；说明开头：${screen.text}` : ""}`),
+    overview ? `封面介绍：${overview}` : "",
+    hasDesign ? "手册里有「软件设计说明」章节。" : "手册里没有「软件设计说明」章节。",
+    "",
+    "修改意见：",
+    ...items.map((item, index) => `意见${index + 1}：${item.text}`),
+    "",
+    '输出 JSON：{"summary":"","actions":[{"type":"image","target":"screen-03","instruction":"","items":[1]}],"questions":[{"question":"","items":[2]}]}',
+  ]
+    .filter((line) => line !== "")
+    .join("\n");
+}
+
+export function feedbackCheck(result, { screenIds, itemCount }) {
+  const problems = [];
+  const seen = new Set();
+  const covered = new Set();
+  for (const action of result.actions || []) {
+    const target = String(action.target || "");
+    if (action.type === "image" && target !== "all" && !screenIds.includes(target)) problems.push(`image 动作的 target 必须是 ${screenIds.join("/")} 或 all，现在是 ${target}`);
+    if (action.type === "text" && !screenIds.includes(target)) problems.push(`text 动作的 target 必须是 ${screenIds.join("/")} 之一，现在是 ${target}`);
+    const key = `${action.type}:${target}`;
+    if (seen.has(key)) problems.push(`${key} 出现了两次，请合并成一个动作`);
+    seen.add(key);
+    for (const index of action.items || []) covered.add(index);
+  }
+  for (const question of result.questions || []) for (const index of question.items || []) covered.add(index);
+  for (let index = 1; index <= itemCount; index += 1) if (!covered.has(index)) problems.push(`意见${index} 没有对应的动作或问题`);
+  return problems;
+}
+
+// ---------------- 修改意见：改生图提示词 ----------------
+
+export const PROMPT_EDIT_SCHEMA = {
+  type: "object",
+  required: ["prompt"],
+  properties: { prompt: { type: "string", minLength: 200 } },
+};
+
+export const PROMPT_EDIT_SYSTEM = `你负责按修改要求改写一份手机 App 截图的生图提示词（英文为主，界面上的中文原样保留）。
+规则：
+1. 只改修改要求涉及的部分，其余描述（尺寸、状态栏、配色、导航、示例数据等）保持原样，输出完整的新提示词。
+2. 修改要求是中文的，改写进提示词时用英文描述，界面上要出现的中文文字原样写。
+3. 原提示词里说明「不能在界面上显示软件名」的句子必须保留；不要在别处新增软件名、App 名、版本号、logo。`;
+
+export function promptEditUserPrompt({ prompt, instruction }) {
+  return [`修改要求：${instruction}`, "", "原提示词：", prompt, "", '输出 JSON：{"prompt":"完整的新提示词"}'].join("\n");
 }

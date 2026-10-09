@@ -62,8 +62,35 @@ export async function startMockLlm(options = {}) {
           inventory: `界面标题为「${title}」，上方是本月支出 ¥3,280 的汇总卡片，下面列出餐饮 ¥1,120、交通 ¥360 等分类，底部有蓝色主按钮。`,
           warnings: [],
         };
+      } else if (system.includes("多条修改意见整理成具体的修改动作")) {
+        calls.push({ step: "feedback", model: request.model, user });
+        // 简单规则模拟大模型：图N + 说明/文字 → 改说明；图N → 改图；封面 → 封面介绍；整体 → 所有图；其他 → 提问
+        const items = [...user.matchAll(/意见(\d+)：(.+)/g)].map((match) => ({ index: Number(match[1]), text: match[2] }));
+        const merged = new Map();
+        const questions = [];
+        for (const item of items) {
+          const figure = item.text.match(/图(\d+)/);
+          let action = null;
+          if (/封面/.test(item.text)) action = { type: "overview", target: "overview" };
+          else if (figure && /说明|文字|多写/.test(item.text)) action = { type: "text", target: `screen-${String(figure[1]).padStart(2, "0")}` };
+          else if (figure) action = { type: "image", target: `screen-${String(figure[1]).padStart(2, "0")}` };
+          else if (/整体|全部/.test(item.text)) action = { type: "image", target: "all" };
+          if (!action) {
+            questions.push({ question: `「${item.text}」具体想改哪一屏？`, items: [item.index] });
+            continue;
+          }
+          const key = `${action.type}:${action.target}`;
+          const previous = merged.get(key);
+          merged.set(key, previous ? { ...previous, instruction: `${previous.instruction}；${item.text}`, items: [...previous.items, item.index] } : { ...action, instruction: item.text, items: [item.index] });
+        }
+        result = { summary: `共 ${merged.size} 处修改`, actions: [...merged.values()], questions };
+      } else if (system.includes("改写一份手机 App 截图的生图提示词")) {
+        calls.push({ step: "prompt-edit", model: request.model, user });
+        const instruction = user.match(/修改要求：(.+)/)?.[1] || "";
+        const original = user.split("原提示词：\n")[1]?.split("\n\n输出 JSON")[0] || "";
+        result = { prompt: `${original.trim()}\nRevision applied: ${instruction}` };
       } else if (system.includes("用户手册撰写专家")) {
-        calls.push({ step: "content", model: request.model });
+        calls.push({ step: "content", model: request.model, user });
         const blocks = [...user.matchAll(/【(screen-\d+)｜(.+?)】/g)];
         result = {
           ...(user.includes("需要输出 overview") ? { overview: "本软件面向需要管理日常收支的上班族，提供快速记账、账单明细、分类统计与预算提醒等功能。用户登录后可在首页查看本月收支概况，通过新增账单快速录入每一笔消费，并在统计页按分类和时间查看趋势，预算接近上限时会收到提醒，个人设置中可管理分类、导出账单与同步备份，帮助用户长期养成记账习惯。" } : {}),

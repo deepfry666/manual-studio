@@ -47,3 +47,19 @@ export function formatSeconds(value?: number | null) {
   if (value === null || value === undefined || Number.isNaN(value)) return "—";
   return value >= 100 ? `${Math.round(value)} 秒` : `${value.toFixed(1)} 秒`;
 }
+
+/** 用时：42秒、4分10秒、1小时2分。 */
+export function formatDuration(ms?: number | null) {
+  if (ms === null || ms === undefined || Number.isNaN(ms)) return "—";
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  if (seconds < 60) return `${seconds}秒`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}分${seconds % 60 ? `${seconds % 60}秒` : ""}`;
+  return `${Math.floor(minutes / 60)}小时${minutes % 60 ? `${minutes % 60}分` : ""}`;
+}
+
+/** 软件名里的版本号（和后端规则一致），用于新建时提示。 */
+export function detectVersion(name: string) {
+  const match = String(name || "").match(/(?:V|v)\s?\d+(?:\.\d+)*|\d+(?:\.\d+)+/g);
+  return match ? match[match.length - 1] : null;
+}

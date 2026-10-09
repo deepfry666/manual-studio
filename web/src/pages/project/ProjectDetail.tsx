@@ -1,14 +1,16 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Alert, App, Breadcrumb, Button, Input, Modal, Space, Spin, Steps, Tabs, Tag, Tooltip, Typography } from "antd";
 import { CaretRightOutlined, EditOutlined, FolderOpenOutlined, PauseOutlined } from "@ant-design/icons";
-import { call } from "../../api";
+import { call, formatDuration } from "../../api";
 import { PROJECT_STATUS, STEP_LABELS, STEP_ORDER, navigate, useDebounced, useLoader, useStudioEvents } from "../../hooks";
-import type { ProjectDetail, StepStatus } from "../../types";
+import type { LiveProgress, ProjectDetail, StepStatus } from "../../types";
 import { OverviewTab } from "./OverviewTab";
 import { PlanTab } from "./PlanTab";
 import { ScreensTab } from "./ScreensTab";
 import { ContentTab } from "./ContentTab";
 import { DeliveryTab } from "./DeliveryTab";
+import { LivePanel } from "./LivePanel";
+import { FeedbackPanel } from "./FeedbackPanel";
 
 const STEP_STATUS: Record<StepStatus, "wait" | "process" | "finish" | "error"> = {
   pending: "wait",
@@ -25,8 +27,19 @@ export function ProjectDetailPage({ dir }: { dir: string }) {
   const reload = useDebounced(project.reload, 250);
   const [activity, setActivity] = useState<string[]>([]);
   const [tab, setTab] = useState<string | null>(null);
+  const [live, setLive] = useState<LiveProgress | null>(null);
+  useEffect(() => {
+    setLive(project.data?.progress || null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project.data?.dir, project.data?.running]);
   useStudioEvents((event) => {
     if (event.projectDir !== dir) return;
+    if (event.type === "progress") {
+      // 进度事件很密，只更新进度面板，不整页刷新
+      setLive((event.progress as LiveProgress) || null);
+      if (!event.progress) reload();
+      return;
+    }
     reload();
     if (event.type === "image") {
       const kind = String(event.kind);
@@ -74,6 +87,13 @@ export function ProjectDetailPage({ dir }: { dir: string }) {
           <h2>{state.request.softwareName}</h2>
           <Tag color={status.color}>{status.label}</Tag>
           {state.origin === "imported" && <Tag>历史项目</Tag>}
+          {state.timing?.completedMs ? (
+            <Tooltip title={`累计 ${formatDuration(state.timing.totalMs)}（含之后的修改和更新），共运行 ${state.timing.runs.length} 次`}>
+              <Tag color="green">完成用时 {formatDuration(state.timing.completedMs)}</Tag>
+            </Tooltip>
+          ) : state.timing?.totalMs ? (
+            <Tag>已用时 {formatDuration(state.timing.totalMs)}</Tag>
+          ) : null}
           {!readOnly && <RenameButton dir={dir} name={state.request.softwareName} disabled={running} />}
         </Space>
         <Space>
@@ -131,6 +151,9 @@ export function ProjectDetailPage({ dir }: { dir: string }) {
           }
         />
       )}
+
+      {live && <LivePanel live={live} data={data} />}
+      {!readOnly && <FeedbackPanel data={data} running={running} onChanged={project.reload} />}
 
       <Steps
         size="small"

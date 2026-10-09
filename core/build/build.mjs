@@ -1,6 +1,7 @@
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { runTemplate, convertToPdf, findLibreOffice, countPdfPages } from "./runtime.mjs";
+import { runTemplate, convertToPdfChecked, findLibreOffice, countPdfPages } from "./runtime.mjs";
+import { DOC_FONTS } from "./fonts.mjs";
 import { validateDelivery, expectedBundleFiles } from "./validate.mjs";
 import { collectCodeSource, languageLabelFor } from "../code-source.mjs";
 import { projectPaths } from "../pipeline/project.mjs";
@@ -89,7 +90,14 @@ async function moveDir(from, to) {
   }
 }
 
-export async function buildBundle({ projectDir, softwareName, content, codeSource, txtFields, excludeDirs, floor = 300, extraBrandTokens = [], stagingRoot, provenance, onLog = () => {} }) {
+/** 字体核对结果 → 给人看的提醒（核对通过返回 null）。 */
+export function pdfFontWarning(kind, result) {
+  if (!result || result.ok) return null;
+  const doc = DOC_FONTS[kind];
+  return `${doc.label} PDF 字体不对：应为「${result.intended}」，实际用了 ${result.fonts.join("、") || "（未识别）"}`;
+}
+
+export async function buildBundle({ projectDir, softwareName, content, codeSource, txtFields, excludeDirs, floor = 300, extraBrandTokens = [], stagingRoot, provenance, fontPlan = null, onLog = () => {} }) {
   assertSafeSoftwareName(softwareName);
   const paths = projectPaths(projectDir);
   const stamp = timestampSlug();
@@ -107,9 +115,10 @@ export async function buildBundle({ projectDir, softwareName, content, codeSourc
 
   const soffice = await findLibreOffice();
   const withPdf = Boolean(soffice);
+  const pdfFonts = {};
   if (withPdf) {
-    onLog("导出指南 PDF");
-    await convertToPdf(path.join(stagingBundle, `${softwareName}指南.docx`), stagingBundle);
+    onLog(`导出指南 PDF（字体：${fontPlan?.guide?.label || "微软雅黑"}）`);
+    pdfFonts.guide = await convertToPdfChecked(path.join(stagingBundle, `${softwareName}指南.docx`), stagingBundle, "guide", fontPlan);
   } else {
     onLog("没有找到 LibreOffice，本次不生成 PDF");
   }
@@ -122,8 +131,8 @@ export async function buildBundle({ projectDir, softwareName, content, codeSourc
     onLog(`生成代码 Word（${code.fileCount} 个文件，${code.lineCount} 行）`);
     await runTemplate("create-code-docx.js", ["--project", staging, "--software", softwareName, "--body-file", path.join(staging, "tmp", "code-body.txt")]);
     if (withPdf) {
-      onLog("导出代码 PDF");
-      await convertToPdf(path.join(stagingBundle, `${softwareName}指南_代码-（JAVA）.docx`), stagingBundle);
+      onLog(`导出代码 PDF（字体：${fontPlan?.code?.label || "新宋体"}）`);
+      pdfFonts.code = await convertToPdfChecked(path.join(stagingBundle, `${softwareName}指南_代码-（JAVA）.docx`), stagingBundle, "code", fontPlan);
     }
   }
 
@@ -143,6 +152,10 @@ export async function buildBundle({ projectDir, softwareName, content, codeSourc
   const withCode = Boolean(code);
   const { errors, warnings } = await validateDelivery({ projectDir: staging, bundleDir: stagingBundle, softwareName, content, withCode, withPdf, extraBrandTokens, floor });
   if (code?.warnings?.length) warnings.push(...code.warnings);
+  for (const [kind, result] of Object.entries(pdfFonts)) {
+    const warning = pdfFontWarning(kind, result);
+    if (warning) warnings.push(warning);
+  }
   if (errors.length) {
     const error = new Error(`交付校验没有通过（正式交付包未改动，诊断文件在 ${staging}）：\n- ${errors.join("\n- ")}`);
     error.validationErrors = errors;
@@ -150,6 +163,7 @@ export async function buildBundle({ projectDir, softwareName, content, codeSourc
   }
 
   const manifest = buildManifest({ softwareName, content, withPdf, withCode, code, codeSource, provenance });
+  if (withPdf) manifest.pdfFonts = summarizeFonts(pdfFonts);
   const regionIndex = buildRegionIndex({ softwareName, content, regionFill, withPdf, withCode, code });
 
   onLog("替换正式交付包");
@@ -173,6 +187,57 @@ export async function buildBundle({ projectDir, softwareName, content, codeSourc
     withCode,
     code: code ? { fileCount: code.fileCount, lineCount: code.lineCount, estimatedPages: code.estimatedPages } : null,
     pdfPages,
+    pdfFonts: summarizeFonts(pdfFonts),
+    codeSha256: code?.sha256 || null,
     warnings,
   };
+}
+
+function summarizeFonts(pdfFonts) {
+  return Object.fromEntries(Object.entries(pdfFonts).map(([kind, result]) => [kind, { ok: result.ok, intended: result.intended, mode: result.mode, fonts: result.fonts }]));
+}
+
+/**
+ * 只重新导出交付包里的 PDF（修正字体用），Word 和 TXT 不动。
+ * 新 PDF 先转到临时目录，核对后再替换；旧 PDF 移到项目的 archive 文件夹。
+ */
+export async function reexportBundlePdfs({ projectDir, softwareName, stagingRoot, fontPlan, onLog = () => {} }) {
+  const paths = projectPaths(projectDir);
+  const bundle = paths.bundle(softwareName);
+  if (!(await exists(bundle))) throw new Error("还没有交付包");
+  if (!(await findLibreOffice())) throw new Error("没有找到 LibreOffice");
+  const docs = [
+    { kind: "guide", docx: `${softwareName}指南.docx` },
+    { kind: "code", docx: `${softwareName}指南_代码-（JAVA）.docx` },
+  ];
+  const stamp = timestampSlug();
+  const staging = path.join(stagingRoot || path.join(projectDir, ".staging"), `${path.basename(projectDir)}-pdf-${stamp}`);
+  await fsp.mkdir(staging, { recursive: true });
+  const results = {};
+  const warnings = [];
+  try {
+    for (const doc of docs) {
+      const source = path.join(bundle, doc.docx);
+      if (!(await exists(source))) continue;
+      onLog(`重新导出 ${doc.docx.replace(/\.docx$/, ".pdf")}`);
+      const result = await convertToPdfChecked(source, staging, doc.kind, fontPlan);
+      results[doc.kind] = result;
+      const warning = pdfFontWarning(doc.kind, result);
+      if (warning) warnings.push(warning);
+    }
+    if (!Object.keys(results).length) throw new Error("交付包里没有 Word 文档");
+    const archiveDir = path.join(paths.archive, `${softwareName}-PDF-${stamp}`);
+    for (const result of Object.values(results)) {
+      const name = path.basename(result.pdfPath);
+      const target = path.join(bundle, name);
+      if (await exists(target)) {
+        await fsp.mkdir(archiveDir, { recursive: true });
+        await fsp.rename(target, path.join(archiveDir, name));
+      }
+      await fsp.copyFile(result.pdfPath, target);
+    }
+  } finally {
+    await fsp.rm(staging, { recursive: true, force: true });
+  }
+  return { files: Object.values(results).map((result) => path.basename(result.pdfPath)), pdfFonts: summarizeFonts(results), warnings };
 }

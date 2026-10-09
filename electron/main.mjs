@@ -41,6 +41,11 @@ async function visionImage(file) {
 
 function send(event) {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("studio:event", event);
+  // 单个项目跑完：窗口不在前台时发系统通知，带上用时
+  if (event.type === "run-finished" && event.status === "done" && !mainWindow?.isFocused() && Notification.isSupported() && !batchActive()) {
+    new Notification({ title: APP_NAME, body: `${event.name} 已完成，本次用时 ${core.formatDuration(event.ms)}` }).show();
+  }
+  if (event.type === "batch") lastBatch = event.items || [];
   if (event.type === "batch" && !mainWindow?.isFocused() && Notification.isSupported()) {
     const items = event.items || [];
     const unfinished = items.filter((item) => ["queued", "running"].includes(item.status)).length;
@@ -52,7 +57,15 @@ function send(event) {
   }
 }
 
-const ACTIONS = ["confirmPlan", "savePlanScreen", "savePrompt", "regenerateScreen", "useAlternate", "manualGate", "saveContent", "rewriteContent", "updateRequest"];
+let lastBatch = [];
+function batchActive() {
+  return lastBatch.some((item) => ["queued", "running"].includes(item.status));
+}
+
+const ACTIONS = [
+  "confirmPlan", "savePlanScreen", "savePrompt", "regenerateScreen", "useAlternate", "manualGate", "saveContent", "rewriteContent", "updateRequest",
+  "useGlobalCodeSource", "addFeedback", "editFeedback", "removeFeedback", "analyzeFeedback", "applyFeedback",
+];
 const BACKGROUND_ACTIONS = new Set(["confirmPlan", "regenerateScreen", "rewriteContent"]);
 
 function methods() {
@@ -75,7 +88,21 @@ function methods() {
     listProjects: () => core.listProjects(),
     getProject: (dir) => core.getProject(dir),
     createProject: (request) => core.createProject(request),
-    createProjectsFromCsv: (text, defaults) => core.createProjectsFromCsv(text, defaults),
+    createProjectsFromList: (text, defaults) => core.createProjectsFromList(text, defaults),
+    getProgress: (dir) => core.getProgress(dir),
+    stepEstimates: () => core.stepEstimates(),
+    planExport: (dirs, targetDir) => core.planExport(dirs, targetDir),
+    exportBundles: (dirs, targetDir, options) => core.exportBundles(dirs, targetDir, options),
+    reexportPdfs: (dirs) => {
+      core.reexportPdfs(dirs).then((result) => send({ type: "pdf-reexport-done", ...result })).catch((error) => send({ type: "log", level: "error", message: error.message }));
+      return true;
+    },
+    fontStatus: () => core.fontStatus(),
+    installFonts: async () => {
+      const result = await dialog.showOpenDialog(mainWindow, { title: "选择字体文件（可多选）", properties: ["openFile", "multiSelections"], filters: [{ name: "字体", extensions: ["ttf", "ttc", "otf"] }] });
+      if (result.canceled) return null;
+      return core.installFonts(result.filePaths);
+    },
     removeFromList: (dir) => core.removeFromList(dir),
     scanWorkspace: (dir) => core.scanWorkspace(dir),
     importProjects: (dirs) => core.importProjects(dirs),
@@ -103,6 +130,11 @@ function methods() {
     batchRetry: (id) => core.batch.retry(id),
     batchRemove: (id) => core.batch.remove(id),
     batchClearFinished: () => core.batch.clearFinished(),
+    batchRemoveProjects: async (dirs) => {
+      const { items } = await core.batch.list();
+      for (const item of items) if (dirs.includes(item.projectDir) && ["queued", "paused", "failed", "needs-attention"].includes(item.status)) await core.batch.remove(item.id);
+      return true;
+    },
     queryCalls: (filter) => core.queryCalls(filter),
     queryLlmCalls: (filter) => core.queryLlmCalls(filter),
     pendingJobs: () => core.pendingJobs(),
@@ -137,7 +169,7 @@ async function assertOpenable(target) {
   const resolved = path.resolve(String(target || ""));
   const settings = (await core.getSettings()).settings;
   const projects = (await core.listProjects()).map((project) => project.dir);
-  const roots = [settings.workspaceDir, ...projects].map((root) => path.resolve(root));
+  const roots = [settings.workspaceDir, settings.export?.lastDir, ...projects].filter(Boolean).map((root) => path.resolve(root));
   const inside = roots.some((root) => resolved === root || resolved.startsWith(root + path.sep));
   if (!inside) throw new Error("只能打开工作区和项目里的文件");
   const stat = await fsp.stat(resolved).catch(() => null);
@@ -190,7 +222,7 @@ function createWindow() {
 
 /** 开发自检：MS_SCREENSHOT_DIR 设置时，依次截取各页面后退出。 */
 async function captureScreens(dir) {
-  const routes = (process.env.MS_SCREENSHOT_ROUTES || "projects,providers,llm,batch,calls,settings").split(",");
+  const routes = (process.env.MS_SCREENSHOT_ROUTES || "projects,new,models,settings").split(",");
   await fsp.mkdir(dir, { recursive: true });
   await new Promise((resolve) => setTimeout(resolve, 2500));
   try {
@@ -219,7 +251,7 @@ app.whenReady().then(async () => {
   if (!isPrimaryInstance) return;
   const dataDir = process.env.MS_DATA_DIR || app.getPath("userData");
   // MS_TEST_MEMORY_SECRETS 仅用于开发自检：密钥只放内存，不碰系统钥匙串
-  core = await createCore({ dataDir, cipher: process.env.MS_TEST_MEMORY_SECRETS ? undefined : cipher, toPng, visionImage, onEvent: send });
+  core = await createCore({ dataDir, cipher: process.env.MS_TEST_MEMORY_SECRETS ? undefined : cipher, toPng, visionImage, onEvent: send, trashItem: (target) => shell.trashItem(target) });
   protocol.handle("asset", (request) => {
     const url = new URL(request.url);
     const target = decodeURIComponent(url.pathname.replace(/^\//, ""));
