@@ -46,7 +46,7 @@ public protocol SecretCipher: Sendable {
     func decrypt(_ value: String) throws -> String
 }
 
-/// secrets.json：每个密钥一条密文，密文由 cipher 生成（App 里用钥匙串保护的 AES 密钥）。
+/// secrets.json：每个密钥一条密文，密文由 cipher 生成（App 里用本机密钥文件里的 AES 密钥）。
 public actor FileSecrets: SecretStore {
     private let file: String
     private let cipher: SecretCipher
@@ -158,6 +158,69 @@ public final class KeychainCipher: SecretCipher, @unchecked Sendable {
         guard let data = Data(base64Encoded: value) else { throw StudioError("密文损坏") }
         let box = try AES.GCM.SealedBox(combined: data)
         return String(decoding: try AES.GCM.open(box, using: symmetricKey()), as: UTF8.self)
+    }
+}
+
+/// 本机文件里的 AES-GCM 密钥（软件数据目录下的 secrets.key，权限 600）。
+/// 不放钥匙串：临时签名的 App 每次升级签名都会变，钥匙串会把新版本当成别的 App，导致弹窗或读不到。
+public final class LocalKeyCipher: SecretCipher, @unchecked Sendable {
+    public let keyFile: String
+    private let lock = NSLock()
+    private var key: SymmetricKey?
+
+    public init(dataDir: String) { keyFile = Path.join(dataDir, "secrets.key") }
+
+    public var exists: Bool { FS.exists(keyFile) }
+
+    private func symmetricKey() throws -> SymmetricKey {
+        lock.lock()
+        defer { lock.unlock() }
+        if let key { return key }
+        if let data = try? FS.read(keyFile), data.count == 32 {
+            key = SymmetricKey(data: data)
+            return key!
+        }
+        let fresh = SymmetricKey(size: .bits256)
+        try FS.mkdirp(Path.dirname(keyFile))
+        let created = FileManager.default.createFile(atPath: keyFile, contents: fresh.withUnsafeBytes { Data($0) }, attributes: [.posixPermissions: 0o600])
+        guard created else { throw StudioError("无法保存本机密钥文件") }
+        key = fresh
+        return fresh
+    }
+
+    public func encrypt(_ value: String) throws -> String {
+        guard let combined = try AES.GCM.seal(Data(value.utf8), using: symmetricKey()).combined else { throw StudioError("加密失败") }
+        return combined.base64EncodedString()
+    }
+
+    public func decrypt(_ value: String) throws -> String {
+        guard let data = Data(base64Encoded: value) else { throw StudioError("密文损坏") }
+        let box = try AES.GCM.SealedBox(combined: data)
+        return String(decoding: try AES.GCM.open(box, using: symmetricKey()), as: UTF8.self)
+    }
+}
+
+/// App 用的密钥存储：secrets.json + 本机密钥文件。
+/// 以前用钥匙串里的密钥加密过的，第一次打开时从钥匙串最后读一次，转成本机密钥加密；读不到的条目删掉（界面会显示「没有密钥」，重新填一次即可）。
+public enum LocalSecrets {
+    /// legacyKey：以前放在钥匙串里的 32 字节密钥（只在需要转换时读一次，只读不写）。
+    public static func open(dataDir: String, legacyKey: () -> Data? = { Keychain.read(service: KeychainCipher.service, account: KeychainCipher.account) }) -> FileSecrets {
+        let cipher = LocalKeyCipher(dataDir: dataDir)
+        let file = Path.join(dataDir, "secrets.json")
+        if !cipher.exists, let stored = FS.readJSONQuiet(file)?.object, !stored.isEmpty {
+            let old = legacyKey().flatMap { $0.count == 32 ? SymmetricKey(data: $0) : nil }
+            var converted = JSONObject()
+            for (id, value) in stored {
+                guard let old, let text = value.string, let data = Data(base64Encoded: text),
+                      let box = try? AES.GCM.SealedBox(combined: data), let plain = try? AES.GCM.open(box, using: old),
+                      let sealed = try? cipher.encrypt(String(decoding: plain, as: UTF8.self)) else { continue }
+                converted[id] = .string(sealed)
+            }
+            if converted.isEmpty { _ = try? cipher.encrypt("") } // 至少把本机密钥建好，以后不再碰钥匙串
+            try? FS.copy(file, file + ".keychain-backup")
+            try? FS.writeJSONAtomic(file, .object(converted), mode: 0o600)
+        }
+        return FileSecrets(dataDir: dataDir, cipher: cipher)
     }
 }
 

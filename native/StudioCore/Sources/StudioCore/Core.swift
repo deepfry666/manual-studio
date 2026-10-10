@@ -20,7 +20,7 @@ public final class StudioCore: @unchecked Sendable {
     let indexSerial = SerialQueue()
     let trashItem: @Sendable (String) throws -> Void
 
-    /// - secrets：App 里用 FileSecrets + KeychainCipher；测试用 MemorySecrets。
+    /// - secrets：App 里用 LocalSecrets（secrets.json + 本机密钥文件）；测试用 MemorySecrets。
     public init(dataDir: String, secrets: SecretStore? = nil, http: HTTPClient = URLSessionHTTPClient(), visionImage: @escaping @Sendable (String) throws -> String = visionDataUrl, appVersion: String = "", onEvent: @escaping @Sendable (JSON) -> Void = { _ in }, gatewaySleep: (@Sendable (Double) async throws -> Void)? = nil, randomDelayMs: (@Sendable () -> Double)? = nil, llmRetryDelay: (@Sendable (Double) async throws -> Void)? = nil, trashItem: (@Sendable (String) throws -> Void)? = nil) async throws {
         try FS.mkdirp(dataDir)
         self.dataDir = dataDir
@@ -38,7 +38,7 @@ public final class StudioCore: @unchecked Sendable {
         emitEvent = emit
         let settingsStore = SettingsStore(dataDir: dataDir)
         self.settingsStore = settingsStore
-        let secrets = secrets ?? FileSecrets(dataDir: dataDir, cipher: KeychainCipher())
+        let secrets = secrets ?? LocalSecrets.open(dataDir: dataDir)
         self.secrets = secrets
         let callLog = CallLog(dataDir: dataDir, fileName: "image-calls.jsonl")
         self.callLog = callLog

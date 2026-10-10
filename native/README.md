@@ -28,9 +28,10 @@ PDF 仍然靠 LibreOffice 转换，没装时「设置 → 通用」里会提示�
 |---|---|---|
 | 项目文件夹 | `~/Desktop/软件指南生成` | 同一个，格式完全相同 |
 | 软件数据（设置、线路、调用记录、项目列表） | `~/Library/Application Support/软件指南生成器` | `~/Library/Application Support/软件指南生成器（原生版）` |
-| 密钥 | Electron safeStorage | 钥匙串里的密钥加密，单独保存 |
+| 密钥 | Electron safeStorage | `secrets.json` 加密保存，加密用的密钥在同目录的 `secrets.key`（权限 600），不经过钥匙串 |
 
-- 软件数据目录和钥匙串项的名字里仍带「（原生版）」，这是内部名字，为了不和 Electron 旧版混在一起，不要改。
+- 软件数据目录的名字里仍带「（原生版）」，这是内部名字，为了不和 Electron 旧版混在一起，不要改。
+- 密钥不放钥匙串：App 是临时签名，每次升级签名都会变，钥匙串会把新版本当成别的 App，弹窗要密码或读不到。1.4.1 之前存在钥匙串里的，第一次打开 1.4.1 时读一次转存到 `secrets.key`，之后不再访问钥匙串。两个文件都只在本机，不会上传。
 - 第一次打开会问要不要导入 Electron 旧版的数据（设置、线路和密钥、调用记录、项目列表）。之后也可以在「设置 → 导入历史项目 → 从 Electron 旧版导入」再导一次，只合并新增的内容。
 - 导入只读 Electron 的数据目录，不会改动它。导入密钥时 macOS 会弹窗询问是否允许读取「软件指南生成器 Safe Storage」，点允许即可。
 - 两个版本共用项目文件夹，同一个项目不要两边同时运行。
@@ -85,4 +86,4 @@ cd StudioCore && swift test
 
 ## 开发自检
 
-设置环境变量 `MS_DEV_CONTROL=<文件>` 启动时，App 会读这个文件里的指令切换页面（见 `App/Support/DevControl.swift`），配合截图逐页检查界面。`MS_DATA_DIR` 可以把软件数据换到别的目录，`MS_TEST_MEMORY_SECRETS=1` 让密钥只存在内存里、不碰钥匙串。
+设置环境变量 `MS_DEV_CONTROL=<文件>` 启动时，App 会读这个文件里的指令切换页面（见 `App/Support/DevControl.swift`），配合截图逐页检查界面。`MS_DATA_DIR` 可以把软件数据换到别的目录，`MS_TEST_MEMORY_SECRETS=1` 让密钥只存在内存里、不写文件。

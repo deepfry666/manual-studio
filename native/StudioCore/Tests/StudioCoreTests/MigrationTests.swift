@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Testing
 @testable import StudioCore
@@ -35,5 +36,39 @@ struct MigrationTests {
         #expect(try core.projectStore.read("/w/A")?["request"]?["softwareName"]?.string == "A")
         #expect(core.stepEstimates()["plan"] == 2000)
         #expect(!ElectronMigration.isFresh(target))
+    }
+
+    @Test("密钥改存本机文件：钥匙串里的旧密钥只读一次转过来，之后不再碰钥匙串；读不到的条目删掉")
+    func localSecrets() async throws {
+        let dir = try FS.makeTempDirectory(prefix: "local-secrets-")
+        defer { FS.remove(dir) }
+        let oldKey = SymmetricKey(size: .bits256)
+        let oldData = oldKey.withUnsafeBytes { Data($0) }
+        let sealed = try AES.GCM.seal(Data("sk-test-123456".utf8), using: oldKey).combined!.base64EncodedString()
+        try FS.writeJSONAtomic(Path.join(dir, "secrets.json"), .obj(["image:p1": .string(sealed)]))
+
+        let reads = Locked(0)
+        let store = LocalSecrets.open(dataDir: dir) { reads.withLock { $0 += 1 }; return oldData }
+        #expect(await store.get("image:p1") == "sk-test-123456")
+        #expect(reads.current == 1)
+        let attributes = try FileManager.default.attributesOfItem(atPath: Path.join(dir, "secrets.key"))
+        #expect((attributes[.posixPermissions] as? Int) == 0o600)
+        try await store.set("llm:v1", "another-key-7890")
+
+        // 再打开：不读钥匙串，密钥都在
+        let again = LocalSecrets.open(dataDir: dir) { reads.withLock { $0 += 1 }; return nil }
+        #expect(reads.current == 1)
+        #expect(await again.get("image:p1") == "sk-test-123456")
+        #expect(await again.get("llm:v1") == "another-key-7890")
+        #expect(!(FS.readTextIfExists(Path.join(dir, "secrets.json")) ?? "").contains("sk-test"), "文件里是密文")
+
+        // 钥匙串读不到（拒绝）：读不出的条目删掉，界面显示没有密钥
+        let denied = try FS.makeTempDirectory(prefix: "local-secrets-denied-")
+        defer { FS.remove(denied) }
+        try FS.writeJSONAtomic(Path.join(denied, "secrets.json"), .obj(["image:p1": .string(sealed)]))
+        let empty = LocalSecrets.open(dataDir: denied) { nil }
+        #expect(await !empty.has("image:p1"))
+        #expect(FS.exists(Path.join(denied, "secrets.key")))
+        #expect(FS.exists(Path.join(denied, "secrets.json.keychain-backup")))
     }
 }

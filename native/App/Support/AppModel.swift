@@ -142,7 +142,7 @@ final class AppModel {
     func finishMigrationChoice(importData: Bool) async {
         if importData {
             do {
-                let secrets: SecretStore = memorySecrets ? MemorySecrets() : FileSecrets(dataDir: dataDir, cipher: KeychainCipher())
+                let secrets: SecretStore = memorySecrets ? MemorySecrets() : LocalSecrets.open(dataDir: dataDir)
                 migrationSummary = try await ElectronMigration.migrate(to: dataDir, secrets: secrets, readSecrets: !memorySecrets)
             } catch {
                 alert = AlertItem(title: "导入失败", message: messageOf(error))
