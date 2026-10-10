@@ -4,3 +4,10 @@ web/dist/
 *.log
 tests/.tmp/
 release/
+native/StudioCore/.build/
+native/StudioCore/.swiftpm/
+native/build/
+native/DerivedData/
+native/dist/
+*.xcuserstate
+xcuserdata/
