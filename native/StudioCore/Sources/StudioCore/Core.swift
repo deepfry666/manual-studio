@@ -402,8 +402,20 @@ public final class StudioCore: @unchecked Sendable {
         return (created, errors)
     }
 
-    public func removeFromList(_ dir: String) async throws {
+    /// 从列表移除。deleteFolder 为 true 时连项目文件夹一起移到废纸篓（可以从废纸篓恢复）。
+    public func removeFromList(_ dir: String, deleteFolder: Bool = false) async throws {
         if pipeline.isRunning(dir) { throw StudioError("项目正在运行，先停止") }
+        if deleteFolder, FS.exists(dir) {
+            let settings = try await settingsStore.get()
+            let target = Path.resolve(dir)
+            // 防止误删工作区、主目录这类上层文件夹
+            let protected = [settings.workspaceDir, NSHomeDirectory(), Path.join(NSHomeDirectory(), "Desktop"), "/"].map(Path.resolve)
+            if protected.contains(target) || Path.basename(target).isEmpty { throw StudioError("不能删除这个文件夹：\(dir)") }
+            try trashItem(target)
+        }
+        for item in batch.list().items where item["projectDir"]?.string == dir {
+            await batch.remove(item["id"]?.string ?? "")
+        }
         try await updateIndex { $0.removeAll { $0["dir"]?.string == dir } }
         await projectStore.remove(dir)
     }

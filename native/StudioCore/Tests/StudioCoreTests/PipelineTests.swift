@@ -210,6 +210,33 @@ struct PipelineTests {
         #expect(try await ctx.project(dir)["state"]?["screens"]?["screen-03"]?["gate"]?["status"]?.string == "passed")
     }
 
+    @Test("已有文档里出现系统字样：检查并更新时只改写带字样的部分，再重建交付包", .timeLimit(.minutes(3)))
+    func platformWordsFixedOnUpdate() async throws {
+        let ctx = try await CoreContext()
+        let dir = try await ctx.create("记账测试 V1.0", screenCount: 3)
+        #expect(await ctx.run(dir).status == "done")
+        let plan = try #require(ctx.llm.steps("plan").last)
+        #expect(plan.user.contains("不要出现 iPhone"), "规划提示词带上系统字样要求")
+        let overview = "记账测试 V1.0 是面向 iPhone 用户的记账工具，" + String(repeating: "提供记账、明细、统计与预算提醒等功能。", count: 8)
+        let tainted = "在 iOS 上打开后进入首页。" + String(repeating: "这是人工写的说明文字。", count: 30)
+        try await ctx.core.pipeline.saveContent(dir, overview: overview, screens: [["id": "screen-02", "text": .string(tainted)]])
+        #expect(await ctx.run(dir).status == "done")
+        let fix = try #require(ctx.llm.steps("content").last)
+        #expect(fix.user.contains("去掉文中的系统或设备字样（iPhone）"))
+        #expect(fix.user.contains("去掉文中的系统或设备字样（iOS）"))
+        #expect(fix.user.contains("【screen-02｜") && !fix.user.contains("【screen-01｜") && !fix.user.contains("【screen-03｜"), "只改写带字样的屏")
+        let content = try readJSONFile(Path.join(dir, "content.json"))
+        let texts: [String] = [content["cover"]?["overview"]?.string ?? ""] + content["screens"].items.map { $0["text"].text }
+        #expect(findPlatformTerms(texts).isEmpty)
+        let txt = try String(contentsOfFile: Path.join(dir, "记账测试 V1.0", "记账测试 V1.0指南.txt"), encoding: .utf8)
+        #expect(!txt.contains("iPhone"), "交付包已经重建")
+
+        // 再跑一次：没有字样了，不再调用大模型写文案
+        let contentCalls = ctx.llm.steps("content").count
+        #expect(await ctx.run(dir).status == "done")
+        #expect(ctx.llm.steps("content").count == contentCalls)
+    }
+
     @Test("改文案后只重建交付包；单屏重生只重生这一屏", .timeLimit(.minutes(3)))
     func editAndRegenerate() async throws {
         let ctx = try await CoreContext()

@@ -196,9 +196,9 @@ public final class Pipeline: @unchecked Sendable {
         try await log(dir, "正在让大模型规划界面…")
         let plan = try await callLlm("plan", dir, ChatJsonRequest(
             system: PLAN_SYSTEM,
-            user: planUserPrompt(softwareName: name, screenCount: screenCount, emphasis: request["emphasis"].text, notes: request["notes"].text, platform: platform),
+            user: planUserPrompt(softwareName: name, screenCount: screenCount, emphasis: request["emphasis"].text, notes: request["notes"].text, platform: platform) + platformNeutralRule(name, forPlan: true),
             schema: PLAN_SCHEMA,
-            check: { planCheck($0, softwareName: name, screenCount: screenCount) },
+            check: { planCheck($0, softwareName: name, screenCount: screenCount) + platformProblems(name, "规划的用户、流程或界面文字", planVisibleTexts($0)) },
             temperature: 0.8,
             maxTokens: 8000
         ))

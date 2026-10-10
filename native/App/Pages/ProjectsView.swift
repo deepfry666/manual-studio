@@ -15,7 +15,7 @@ struct ProjectsView: View {
     @State private var selection = Set<String>()
     @State private var exportDirs: ExportRequest?
     @State private var pdfTargets: [String]?
-    @State private var removeTarget: ProjectRow?
+    @State private var removeTargets: [ProjectRow]?
 
     struct ExportRequest: Identifiable {
         let id = UUID()
@@ -64,16 +64,11 @@ struct ProjectsView: View {
         } message: {
             Text("只用交付包里现有的 Word 重新转 PDF（修正字体），Word、TXT 和截图都不动；旧 PDF 移到项目的 archive 文件夹。每个项目大约 10–40 秒，一个个来。")
         }
-        .confirmationDialog("从列表移除这个项目？", isPresented: Binding(get: { removeTarget != nil }, set: { if !$0 { removeTarget = nil } }), titleVisibility: .visible) {
-            Button("移除", role: .destructive) {
-                guard let target = removeTarget else { return }
-                Task {
-                    await model.perform { try await model.core?.removeFromList(target.dir) }
-                    await model.reloadProjects()
-                }
-            }
+        .confirmationDialog(removeTargets.map { $0.count == 1 ? "移除「\($0[0].name)」？" : "移除 \($0.count) 个项目？" } ?? "", isPresented: Binding(get: { removeTargets != nil }, set: { if !$0 { removeTargets = nil } }), titleVisibility: .visible) {
+            Button("只从列表移除") { remove(removeTargets ?? [], deleteFolder: false) }
+            Button("移除并把文件夹移到废纸篓", role: .destructive) { remove(removeTargets ?? [], deleteFolder: true) }
         } message: {
-            Text("只是不在软件里显示，项目文件夹不会删除。")
+            Text("只从列表移除：项目文件夹留在原处，以后可以在「设置 → 导入历史项目」里重新导入。\n移到废纸篓：项目文件夹（截图、文档、交付包）一起移到废纸篓，清空废纸篓前都可以恢复。")
         }
     }
 
@@ -180,6 +175,18 @@ struct ProjectsView: View {
         }
     }
 
+    func remove(_ targets: [ProjectRow], deleteFolder: Bool) {
+        Task {
+            var done = 0
+            for target in targets {
+                if await model.perform(nil, { try await model.core?.removeFromList(target.dir, deleteFolder: deleteFolder) }) { done += 1 }
+            }
+            selection.subtract(targets.map(\.dir))
+            await model.reloadProjects()
+            if done > 0 { model.toast(.success, deleteFolder ? "已移除 \(done) 个项目，文件夹已移到废纸篓" : "已从列表移除 \(done) 个项目") }
+        }
+    }
+
     /// 人工看过 PDF 觉得可以接受：不再标「PDF 字体不对」。
     func ignoreFonts(_ targets: [ProjectRow]) {
         let dirs = targets.filter(\.pdfFontProblem).map(\.dir)
@@ -209,7 +216,7 @@ struct ProjectsView: View {
         }
         if targets.count == 1, let row = targets.first {
             Divider()
-            Button("从列表移除…") { removeTarget = row }
+            Button("从列表移除…") { removeTargets = [row] }
                 .disabled(row.status == "running")
         }
     }
@@ -260,6 +267,8 @@ struct ProjectsView: View {
                             }
                         }
                     }
+                    Button("从列表移除…") { removeTargets = selectedRows.filter { $0.status != "running" } }
+                        .disabled(selectedRows.allSatisfy { $0.status == "running" })
                     Divider()
                     Button("全选当前列表") { selection = Set(rows.map(\.dir)) }
                     Button("取消选择") { selection = [] }

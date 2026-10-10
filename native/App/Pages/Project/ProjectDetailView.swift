@@ -161,17 +161,20 @@ struct ProjectDetailView: View {
         .sheet(isPresented: $renameOpen) {
             RenameSheet(dir: dir, name: data.name)
         }
-        .confirmationDialog("从列表移除这个项目？", isPresented: $removeConfirm, titleVisibility: .visible) {
-            Button("移除", role: .destructive) {
-                Task {
-                    if await model.perform(nil, { try await model.core?.removeFromList(dir) }) {
-                        await model.reloadProjects()
-                        model.projectPath = []
-                    }
-                }
-            }
+        .confirmationDialog("移除「\(data.name)」？", isPresented: $removeConfirm, titleVisibility: .visible) {
+            Button("只从列表移除") { remove(deleteFolder: false) }
+            Button("移除并把文件夹移到废纸篓", role: .destructive) { remove(deleteFolder: true) }
         } message: {
-            Text("只是不在软件里显示，项目文件夹不会删除。")
+            Text("只从列表移除：项目文件夹留在原处，以后可以在「设置 → 导入历史项目」里重新导入。\n移到废纸篓：项目文件夹（截图、文档、交付包）一起移到废纸篓，清空废纸篓前都可以恢复。")
+        }
+    }
+
+    func remove(deleteFolder: Bool) {
+        Task {
+            if await model.perform(deleteFolder ? "已移除，项目文件夹已移到废纸篓" : "已从列表移除", { try await model.core?.removeFromList(dir, deleteFolder: deleteFolder) }) {
+                await model.reloadProjects()
+                model.projectPath = []
+            }
         }
     }
 }

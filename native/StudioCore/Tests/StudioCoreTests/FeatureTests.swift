@@ -172,6 +172,23 @@ struct FeatureTests {
         #expect(throws: StudioError.self) { try ctx.core.planExport([a, b], targetDir: desktop, groupName: "a/b") }
     }
 
+    @Test("系统字样：软件名没指明系统时，规划、文案、设计说明里出现 iPhone/安卓 等就打回")
+    func platformTerms() {
+        #expect(!softwareNameNamesPlatform("云伴日程 V1.0"))
+        #expect(softwareNameNamesPlatform("安卓清理大师 V1.0"))
+        #expect(softwareNameNamesPlatform("iPad 手账 V1.0"))
+        #expect(findPlatformTerms(["是面向 iPhone 用户的存储空间清理工具，支持 iOS 26 与安卓"]) == ["iPhone", "iOS", "安卓"])
+        #expect(findPlatformTerms(["Studios 和 radios 不算；Bios 也不算"]).isEmpty, "英文单词里的片段不算")
+        #expect(findPlatformTerms(["适配 iPhone 16 Pro Max 屏幕"]) == ["iPhone", "Pro Max"])
+        #expect(platformProblems("云伴日程 V1.0", "功能说明", ["在手机上打开 App 即可"]).isEmpty)
+        #expect(platformProblems("云伴日程 V1.0", "功能说明", ["面向 iPhone 用户"]).first?.contains("iPhone") == true)
+        #expect(platformProblems("安卓清理大师 V1.0", "功能说明", ["面向安卓用户"]).isEmpty, "软件名指明了系统就允许")
+        #expect(platformNeutralRule("云伴日程 V1.0").contains("不要出现 iPhone"))
+        #expect(platformNeutralRule("安卓清理大师 V1.0").isEmpty)
+        let plan: JSON = .obj(["profile": .obj(["domain": "存储清理", "targetUser": "iPhone 用户", "coreFlow": "扫描—清理"]), "screens": [.obj(["title": "首页", "visualBrief": "iOS 风格大标题", "mustShow": ["空间占用"], "sampleData": [], "textContract": .obj(["entry": "打开 App"])])]])
+        #expect(findPlatformTerms(planVisibleTexts(plan)) == ["iPhone"], "画面描述里写界面风格不算")
+    }
+
     @Test("PDF 字体：替换表、核对、原版已安装时不替换、记住能用的字体名")
     func fonts() {
         let xml = fontRegistryXml([FontPair(from: "新宋体", to: "华文宋体")])

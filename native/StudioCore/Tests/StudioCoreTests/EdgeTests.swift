@@ -311,6 +311,22 @@ struct EdgeTests {
         #expect(try await ctx.core.listProjects().first { $0["dir"]?.string == dir }?["pdfFontProblem"] == .bool(false))
     }
 
+    @Test("从列表移除：可选把项目文件夹移到废纸篓；不能删工作区这类上层文件夹")
+    func removeWithFolder() async throws {
+        let ctx = try await CoreContext()
+        let keep = try await ctx.create("只移除 V1.0", screenCount: 2)
+        let drop = try await ctx.create("连文件夹 V1.0", screenCount: 2)
+        try await ctx.core.removeFromList(keep)
+        #expect(FS.exists(keep), "只从列表移除不动文件夹")
+        try await ctx.core.removeFromList(drop, deleteFolder: true)
+        #expect(ctx.trashed.current == [Path.resolve(drop)])
+        #expect(!FS.exists(drop))
+        let left = try await ctx.core.listProjects().compactMap { $0["dir"]?.string }
+        #expect(!left.contains(keep) && !left.contains(drop))
+        await #expect(throws: StudioError.self) { try await ctx.core.removeFromList(ctx.workspace, deleteFolder: true) }
+        #expect(FS.exists(ctx.workspace))
+    }
+
     @Test("截图编号不合法会被拒绝；项目运行中不能修改", .timeLimit(.minutes(2)))
     func safety() async throws {
         let ctx = try await CoreContext(relayBehavior: { _, _ in RelayPlan(delayMs: 800) })

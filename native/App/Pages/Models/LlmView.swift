@@ -212,8 +212,10 @@ struct VendorEditor: View {
                 })) {
                     ForEach(LLM_PRESET_ORDER, id: \.self) { Text(LLM_PRESETS[$0]!.label).tag($0) }
                 }
-                .pickerStyle(.segmented)
+                // 分段按钮每段一样宽，按最长的「OpenAI 兼容（自定义 / CPA）」撑开会超出弹窗，改用下拉
+                .pickerStyle(.menu)
                 .labelsHidden()
+                .fixedSize()
             }
             labeled("名称") { TextField("", text: $draft.name).textFieldStyle(.roundedBorder) }
             labeled("接口地址") { TextField("https://.../v1", text: $draft.baseUrl).textFieldStyle(.roundedBorder) }

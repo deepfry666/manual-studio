@@ -10,6 +10,7 @@ extension Pipeline {
         guard let plan = try readPlan(dir) else { throw StudioError("还没有界面规划") }
         let paths = projectPaths(dir)
         let floor = max(300, settings.pipeline.featureTextFloor == 0 ? 300 : settings.pipeline.featureTextFloor)
+        let name = softwareName(state)
         let existing = try FS.readJSON(paths.content)
         var existingById: [String: JSON] = [:]
         var existingOrder: [String] = []
@@ -20,6 +21,8 @@ extension Pipeline {
         }
         let planScreens = plan["screens"].items
         let planHash = hashObject(.obj(["profile": plan["profile"] ?? .null, "titles": .array(planScreens.map { $0["title"] ?? .null })]))
+        let neutral = !softwareNameNamesPlatform(name)
+        var autoInstructions: [String: String] = [:]
         var inventories: [String: String] = [:]
         var targets: [JSON] = []
         var staleEdited: [String] = []
@@ -37,12 +40,24 @@ extension Pipeline {
             let shot = state["screens"]?[id] ?? .emptyObject
             let forced = (ctx.forceContent?.contains(id) ?? false) || !(ctx.contentInstructions?[id] ?? "").isEmpty
             let unchanged = shot["contentHash"].isTruthy ? shot["contentHash"]?.string == hash : state["origin"]?.string == "imported"
-            let keep = old?["text"].isTruthy == true && !forced && (shot["textEdited"].isTruthy || (unchanged && !shot["contentStale"].isTruthy))
+            var keep = old?["text"].isTruthy == true && !forced && (shot["textEdited"].isTruthy || (unchanged && !shot["contentStale"].isTruthy))
+            // 软件名没指明系统，旧说明里却有 iPhone、安卓 等字样：只改掉这些字样，其余保持
+            let platformHits = keep && neutral ? findPlatformTerms([old?["text"].text ?? ""]) : []
+            if !platformHits.isEmpty {
+                keep = false
+                autoInstructions[id] = platformFixInstruction(platformHits)
+            }
             if !keep { targets.append(screen) }
             if keep, shot["textEdited"].isTruthy, shot["contentStale"].isTruthy { staleEdited.append(id) }
         }
-        let instructions = ctx.contentInstructions ?? [:]
         let existingOverviewValue = existing?["cover"]?["overview"]
+        let overviewHits = neutral ? findPlatformTerms([existingOverviewValue.text]) : []
+        if !overviewHits.isEmpty { autoInstructions["overview"] = platformFixInstruction(overviewHits) }
+        // 用户自己的修改要求优先；自动去系统字样的要求只补在没有要求的部分
+        let instructions = (ctx.contentInstructions ?? [:]).merging(autoInstructions) { user, auto in user.isEmpty ? auto : user }
+        if !autoInstructions.isEmpty {
+            try await log(dir, "说明里出现了系统或设备字样，改成通用说法：\(autoInstructions.keys.sorted().map { $0 == "overview" ? "封面介绍" : $0 }.joined(separator: "、"))")
+        }
         let needOverview = !existingOverviewValue.isTruthy
             || (state["contentPlanHash"].isTruthy && state["contentPlanHash"]?.string != planHash && !state["overviewEdited"].isTruthy)
             || (ctx.forceContent?.contains("overview") ?? false)
@@ -60,9 +75,9 @@ extension Pipeline {
                 setProgress(dir, .obj(["detail": .string(targets.isEmpty ? "撰写封面介绍" : "撰写说明：第 \(min(targets.count, index * 4 + 1))–\(min(targets.count, index * 4 + chunk.count)) 屏（共 \(targets.count) 屏）")]))
                 let result = try await callLlm("content", dir, ChatJsonRequest(
                     system: CONTENT_SYSTEM.replacingOccurrences(of: "{floor}", with: String(floor)),
-                    user: contentUserPrompt(softwareName: softwareName(state), profile: plan["profile"], screens: chunk, inventories: inventories, needOverview: wantsOverview, existingOverview: overview, floor: floor, instructions: instructions, currentTexts: currentTexts),
+                    user: contentUserPrompt(softwareName: softwareName(state), profile: plan["profile"], screens: chunk, inventories: inventories, needOverview: wantsOverview, existingOverview: overview, floor: floor, instructions: instructions, currentTexts: currentTexts) + platformNeutralRule(softwareName(state)),
                     schema: CONTENT_SCHEMA,
-                    check: { contentCheck($0, screens: chunk, needOverview: wantsOverview, floor: floor) },
+                    check: { contentCheck($0, screens: chunk, needOverview: wantsOverview, floor: floor) + platformProblems(name, "封面介绍或功能说明", [$0["overview"].text] + $0["screens"].items.flatMap { [$0["title"].text, $0["text"].text] }) },
                     temperature: 0.7,
                     maxTokens: 8000
                 ))
@@ -158,15 +173,19 @@ extension Pipeline {
             }
             return StepOutcome(status: "skipped")
         }
-        if !(content["design"]?["sections"]?.array?.isEmpty ?? true), !ctx.forceDesign, (ctx.designInstruction ?? "").isEmpty { return StepOutcome(status: "done") }
+        let designName = softwareName(state)
+        let designHits = softwareNameNamesPlatform(designName) ? [] : findPlatformTerms(content["design"]?["sections"].items.flatMap { [$0["title"].text, $0["text"].text] } ?? [])
+        let designInstruction = (ctx.designInstruction ?? "").isEmpty && !designHits.isEmpty ? platformFixInstruction(designHits) : ctx.designInstruction
+        if !(content["design"]?["sections"]?.array?.isEmpty ?? true), !ctx.forceDesign, (designInstruction ?? "").isEmpty { return StepOutcome(status: "done") }
         guard let plan = try readPlan(dir) else { throw StudioError("还没有界面规划") }
         try await log(dir, "正在撰写设计说明…")
+        let name = softwareName(state)
         let current = (content["design"]?["sections"].items ?? []).map { "\(templateText($0["title"]))\n\(templateText($0["text"]))" }.joined(separator: "\n\n")
         let result = try await callLlm("design", dir, ChatJsonRequest(
             system: DESIGN_SYSTEM,
-            user: designUserPrompt(softwareName: softwareName(state), profile: plan["profile"], features: plan["featureMap"]?["features"].items ?? [], screens: plan["screens"].items, instruction: ctx.designInstruction, current: current),
+            user: designUserPrompt(softwareName: softwareName(state), profile: plan["profile"], features: plan["featureMap"]?["features"].items ?? [], screens: plan["screens"].items, instruction: designInstruction, current: current) + platformNeutralRule(softwareName(state)),
             schema: DESIGN_SCHEMA,
-            check: designCheck,
+            check: { designCheck($0) + platformProblems(name, "设计说明", $0["sections"].items.flatMap { [$0["title"].text, $0["text"].text] }) },
             temperature: 0.6,
             maxTokens: 8000
         ))
