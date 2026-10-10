@@ -44,7 +44,7 @@ scripts/release.sh 1.1.0             # 更新说明按提交记录自动生成
 scripts/release.sh 1.1.0 notes.md    # 或者自己写更新说明
 ```
 
-脚本会改版本号、跑测试、打包、提交并打标签 `v1.1.0`、推送到 GitHub，再建 Release 并上传 `软件指南生成器-1.1.0.zip`。需要先 `gh auth login` 登录 GitHub。下载 zip 解压后，把 App 拖进「应用程序」替换旧的即可，数据不受影响。
+脚本会改版本号、跑测试、打包、提交并打标签 `v1.1.0`、推送到 GitHub，再建 Release 并上传 zip（文件名是 `ManualStudio-1.1.0.zip`，GitHub 不支持中文附件名，显示名是中文）。需要先 `gh auth login` 登录 GitHub。下载 zip 解压后，把 App 拖进「应用程序」替换旧的即可，数据不受影响。
 
 ## 结构
 

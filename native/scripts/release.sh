@@ -34,9 +34,13 @@ git tag -a "$TAG" -m "软件指南生成器 $VERSION"
 git push origin HEAD "$TAG"
 
 echo "==> 创建 GitHub Release"
+# GitHub 会去掉附件文件名里的中文，所以上传英文文件名，中文放在显示名里
+ASSET="dist/ManualStudio-$VERSION.zip"
+cp "$ZIP" "$ASSET"
+LABEL="软件指南生成器-$VERSION.zip（macOS，解压后拖进应用程序）"
 if [[ -n $NOTES ]]; then
-  gh release create "$TAG" "$ZIP" --title "软件指南生成器 $VERSION" --notes-file "$NOTES"
+  gh release create "$TAG" "$ASSET#$LABEL" --title "软件指南生成器 $VERSION" --notes-file "$NOTES"
 else
-  gh release create "$TAG" "$ZIP" --title "软件指南生成器 $VERSION" --generate-notes
+  gh release create "$TAG" "$ASSET#$LABEL" --title "软件指南生成器 $VERSION" --generate-notes
 fi
 echo "==> 完成：$TAG"
