@@ -77,10 +77,12 @@ struct CallsView: View {
                     Text(row.json["projectName"]?.string ?? "—").lineLimit(1)
                     Text(row.json["screenId"]?.string ?? "").font(.caption.monospaced()).foregroundStyle(.secondary)
                 }
+                .help("\(row.json["projectName"]?.string ?? "") \(row.json["screenId"]?.string ?? "")")
             }
-            TableColumn("线路") { row in Text(row.json["providerName"]?.string ?? row.json["providerId"].text).lineLimit(1) }.width(min: 100, ideal: 150)
+            .width(min: 150)
+            TableColumn("线路") { row in Text(row.json["providerName"]?.string ?? row.json["providerId"].text).lineLimit(1).help(row.json["providerName"]?.string ?? "") }.width(min: 90, ideal: 130)
             TableColumn("类型") { row in Text(ROLE_LABEL[row.json["role"]?.string ?? ""] ?? row.json["role"]?.string ?? "—") }.width(56)
-            TableColumn("尺寸") { row in Text(row.json["requestSize"]?.string ?? "—").font(.callout.monospaced()) }.width(86)
+            TableColumn("尺寸") { row in Text(row.json["requestSize"]?.string ?? "—").font(.callout.monospaced()) }.width(80)
             TableColumn("耗时") { row in Text(formatSeconds(row.json["durationMs"]?.number.map { $0 / 1000 })).monospacedDigit() }.width(70)
             TableColumn("结果") { row in
                 if row.json["ok"].isTruthy {
@@ -92,7 +94,7 @@ struct CallsView: View {
                     Text("\(row.json["kind"].text)：\(row.json["errorMessage"].text)").foregroundStyle(.red).lineLimit(1).help(row.json["errorMessage"].text)
                 }
             }
-            .width(min: 160, ideal: 240)
+            .width(min: 64, ideal: 100)
         }
     }
 

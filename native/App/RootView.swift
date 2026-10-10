@@ -46,7 +46,7 @@ struct MainSplitView: View {
         @Bindable var model = model
         NavigationSplitView {
             SidebarView()
-                .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 280)
+                .navigationSplitViewColumnWidth(min: 180, ideal: 200, max: 280)
         } detail: {
             Group {
                 switch model.section ?? .projects {

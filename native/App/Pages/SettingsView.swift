@@ -227,7 +227,7 @@ struct TxtSettings: View {
     func field(_ key: String) -> some View {
         SettingsRow(label: TXT_LABELS.first { $0.key == key }?.label ?? key) {
             CommitTextField(placeholder: "", value: model.settings.txtFields[key] ?? "") { model.saveSettings(["txtFields": .obj([key: .string($0)])]) }
-                .frame(width: 260)
+                .frame(minWidth: 160, idealWidth: 260, maxWidth: 260)
         }
     }
 

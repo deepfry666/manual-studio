@@ -87,7 +87,7 @@ struct RowLabel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 4) {
-                Text(title)
+                Text(title).fixedSize(horizontal: true, vertical: false)
                 if let info { InfoButton(text: info) }
             }
             if let hint, !hint.isEmpty {

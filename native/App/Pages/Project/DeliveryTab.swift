@@ -15,7 +15,7 @@ struct DeliveryTab: View {
         let build = data.lastBuild
         let code = data.codeSource
         let oldCodeDoc = data.bundleFiles.contains { $0.contains("_代码-（JAVA）") }
-        AdaptiveColumns(breakpoint: 900, trailingWidth: 420) {
+        AdaptiveColumns(breakpoint: 760, trailingWidth: 360) {
             VStack(alignment: .leading, spacing: 16) {
                 SettingsGroup(title: "交付文件", footer: nil, trailing: readOnly ? nil : AnyView(
                     Button("生成 / 更新", systemImage: "hammer") { model.core?.run(data.dir) }.buttonStyle(.glassProminent).disabled(running)
@@ -129,7 +129,7 @@ struct DeliveryTab: View {
                             CommitTextField(placeholder: model.settings.txtFields[field.key] ?? "", value: data.request["txtFields"]?[field.key]?.string ?? "") { value in
                                 saveTxt(field.key, value)
                             }
-                            .frame(width: 220)
+                            .frame(minWidth: 160, idealWidth: 220, maxWidth: 220)
                             .disabled(readOnly || running)
                         }
                     }

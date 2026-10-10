@@ -23,7 +23,7 @@ struct OverviewTab: View {
             SettingsGroup(title: "进度") {
                 StepsIndicator(data: data).padding(14)
             }
-            AdaptiveColumns(breakpoint: 900, trailingWidth: 400) {
+            AdaptiveColumns(breakpoint: 760, trailingWidth: 320) {
                 VStack(alignment: .leading, spacing: 18) {
                     settingsGroup
                     extrasGroup
@@ -60,12 +60,12 @@ struct OverviewTab: View {
             .disabled(disabled)
             SettingsRow(label: "重点功能") {
                 CommitTextField(placeholder: "", value: request["emphasis"].text) { update(["emphasis": .string($0)]) }
-                    .frame(width: 300)
+                    .frame(minWidth: 160, idealWidth: 300, maxWidth: 300)
             }
             .disabled(disabled)
             SettingsRow(label: "补充说明") {
                 CommitTextField(placeholder: "", value: request["notes"].text, axis: .vertical) { update(["notes": .string($0)]) }
-                    .frame(width: 300)
+                    .frame(minWidth: 160, idealWidth: 300, maxWidth: 300)
             }
             .disabled(disabled)
             SettingsRow(label: "平台") {

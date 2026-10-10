@@ -156,7 +156,7 @@ struct ProjectDetailView: View {
         }
         .inspector(isPresented: $feedbackOpen) {
             FeedbackPanel(data: data, running: running, onChanged: refresh)
-                .inspectorColumnWidth(min: 380, ideal: 440, max: 600)
+                .inspectorColumnWidth(min: 320, ideal: 360, max: 560)
         }
         .sheet(isPresented: $renameOpen) {
             RenameSheet(dir: dir, name: data.name)

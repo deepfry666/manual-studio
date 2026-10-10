@@ -33,13 +33,14 @@ struct FeedbackPanel: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                 HStack(alignment: .bottom) {
-                    TextField(canAnalyze ? "例如「图3 按钮改成蓝色」，⌘↩ 加入清单" : "跑出截图后再提修改意见", text: $text, axis: .vertical)
+                    TextField(canAnalyze ? "例如「图3 按钮改成蓝色」" : "跑出截图后再提修改意见", text: $text, axis: .vertical)
                         .textFieldStyle(.roundedBorder)
                         .lineLimit(1...4)
                         .disabled(!canAnalyze || data.readOnly)
                         .onSubmit(add)
                     Button("加入清单", action: add)
                         .keyboardShortcut(.return, modifiers: .command)
+                        .help("快捷键 ⌘↩")
                         .disabled(text.jsTrimmed.isEmpty)
                 }
                 if !pending.isEmpty {

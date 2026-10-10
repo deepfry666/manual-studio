@@ -97,15 +97,15 @@ struct ProvidersView: View {
 
     var providerHeader: some View {
         HStack(spacing: 10) {
-            Text("顺序").frame(width: 52, alignment: .leading)
+            Text("顺序").frame(width: 40, alignment: .leading)
             Text("线路").frame(maxWidth: .infinity, alignment: .leading)
-            Text("状态").frame(width: 170, alignment: .leading)
-            Text("耗时 P50 / P90").frame(width: 120, alignment: .leading).help("最近 50 次成功调用")
+            Text("状态").frame(width: 110, alignment: .leading)
+            Text("耗时 P50 / P90").frame(width: 106, alignment: .leading).help("最近 50 次成功调用")
             Text("成功率").frame(width: 56, alignment: .leading)
             Text("补发线").frame(width: 60, alignment: .leading).help("超过这个时间还没出图就补发到另一条线路；有 5 次以上历史后按实际耗时自动计算")
             Text("并发").frame(width: 36, alignment: .leading)
             Text("启用").frame(width: 44, alignment: .leading)
-            Text("").frame(width: 120)
+            Text("").frame(width: 96)
         }
         .font(.caption)
         .foregroundStyle(.secondary)
@@ -122,12 +122,9 @@ struct ProvidersView: View {
                 Button { move(index, 1) } label: { Image(systemName: "chevron.down") }.disabled(index == providers.count - 1)
             }
             .buttonStyle(.borderless)
-            .frame(width: 52, alignment: .leading)
+            .frame(width: 40, alignment: .leading)
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(provider.name).fontWeight(.semibold).lineLimit(1).help(provider.name)
-                    if !(model.providerKeys[provider.id] ?? false) { TagView(text: "没有密钥", tone: .red) }
-                }
+                Text(provider.name).fontWeight(.semibold).lineLimit(1).truncationMode(.middle).help(provider.name)
                 Text("\(provider.model) · \(isAsync ? "异步" : "同步") · \(provider.sizeMode == "ratio" ? "比例" : provider.pixelSize)")
                     .font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
@@ -135,6 +132,8 @@ struct ProvidersView: View {
             Group {
                 if !provider.enabled {
                     TagView(text: "已停用")
+                } else if !(model.providerKeys[provider.id] ?? false) {
+                    TagView(text: "没有密钥", tone: .red).help("编辑这条线路，填好密钥后才能用")
                 } else if let reason = status["unavailable"]?.string {
                     VStack(alignment: .leading, spacing: 2) {
                         TagView(text: reason.components(separatedBy: "：").first ?? reason, tone: .orange).help(reason)
@@ -151,8 +150,8 @@ struct ProvidersView: View {
                     TagView(text: "可用", tone: .green)
                 }
             }
-            .frame(width: 170, alignment: .leading)
-            Text(status["p50"]?.number.map { "\(formatSeconds($0)) / \(formatSeconds(status["p90"]?.number))" } ?? "—").monospacedDigit().frame(width: 120, alignment: .leading)
+            .frame(width: 110, alignment: .leading)
+            Text(status["p50"]?.number.map { "\(formatSeconds($0)) / \(formatSeconds(status["p90"]?.number))" } ?? "—").monospacedDigit().frame(width: 106, alignment: .leading)
             Text(status["successRate"]?.number.map { "\(Int(jsRound($0 * 100)))%" } ?? "—").monospacedDigit().frame(width: 56, alignment: .leading)
             Text(formatSeconds(status["hedgeThresholdSec"]?.number)).monospacedDigit().frame(width: 60, alignment: .leading)
             Text("\(provider.concurrency)").frame(width: 36, alignment: .leading)
@@ -165,7 +164,7 @@ struct ProvidersView: View {
                 Button(role: .destructive) { deleting = provider } label: { Image(systemName: "trash") }.help("删除")
             }
             .buttonStyle(.borderless)
-            .frame(width: 120, alignment: .trailing)
+            .frame(width: 96, alignment: .trailing)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)

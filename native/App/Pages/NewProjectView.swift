@@ -85,16 +85,16 @@ struct SingleProjectForm: View {
                     SettingsRow(label: "软件名", hint: name.jsTrimmed.isEmpty ? "含版本号，按原样填写" : version.map { "识别到版本号 \($0)" } ?? "没有版本号", info: "只用于文件名、文档标题和页眉，截图里不会出现软件名和版本号。") {
                         TextField("例如：云伴日程 V1.0", text: $name)
                             .textFieldStyle(.roundedBorder)
-                            .frame(width: 320)
+                            .frame(minWidth: 160, idealWidth: 320, maxWidth: 320)
                             .focused($nameFocused)
                             .onSubmit { submit(runNow: true) }
                     }
                     ScreenCountRow(autoCount: $autoCount, screenCount: $screenCount)
                     SettingsRow(label: "重点功能") {
-                        TextField("可选，例如：违章查询、在线缴费", text: $emphasis).textFieldStyle(.roundedBorder).frame(width: 320)
+                        TextField("可选，例如：违章查询、在线缴费", text: $emphasis).textFieldStyle(.roundedBorder).frame(minWidth: 160, idealWidth: 320, maxWidth: 320)
                     }
                     SettingsRow(label: "补充说明") {
-                        TextField("可选，目标用户、风格偏好等", text: $notes, axis: .vertical).textFieldStyle(.roundedBorder).lineLimit(1...4).frame(width: 320)
+                        TextField("可选，目标用户、风格偏好等", text: $notes, axis: .vertical).textFieldStyle(.roundedBorder).lineLimit(1...4).frame(minWidth: 160, idealWidth: 320, maxWidth: 320)
                     }
                 }
                 SettingsGroup(title: "生成选项") {

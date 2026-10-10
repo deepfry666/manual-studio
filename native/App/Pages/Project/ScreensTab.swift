@@ -29,7 +29,7 @@ struct ScreensTab: View {
             EmptyHint(title: readOnly ? "这个历史项目没有截图源文件" : "规划完成后会在这里显示截图", systemImage: "iphone")
                 .frame(minHeight: 300)
         } else {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 210, maximum: 260), spacing: 16)], alignment: .leading, spacing: 16) {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 170, maximum: 240), spacing: 16, alignment: .top)], alignment: .leading, spacing: 16) {
                 ForEach(data.screens) { screen in
                     ScreenCard(screen: screen, data: data, running: running, readOnly: readOnly,
                                onPreview: { preview = screen },
