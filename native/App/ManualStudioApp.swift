@@ -6,21 +6,30 @@ import SwiftUI
 struct ManualStudioApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @State private var model = AppModel()
+    @State private var updater = UpdateController()
 
     var body: some Scene {
         // 只开一个窗口：两个窗口同时写同一份数据会出错
         Window("软件指南生成器", id: "main") {
             RootView()
                 .environment(model)
+                .environment(updater)
                 .frame(minWidth: 1120, minHeight: 720)
+                .sheet(isPresented: Bindable(updater).presented) {
+                    UpdateSheet(updater: updater).environment(model)
+                }
                 .task {
                     delegate.model = model
                     await model.start()
+                    updater.checkOnLaunch()
                 }
         }
         .defaultSize(width: 1440, height: 920)
         .windowToolbarStyle(.unified)
         .commands {
+            CommandGroup(after: .appInfo) {
+                Button("检查更新…") { Task { await updater.check(manual: true) } }
+            }
             CommandGroup(replacing: .newItem) {
                 Button("新建项目") { model.go(.new) }
                     .keyboardShortcut("n")

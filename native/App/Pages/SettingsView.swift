@@ -46,6 +46,7 @@ extension AppModel {
 
 struct GeneralSettings: View {
     @Environment(AppModel.self) private var model
+    @Environment(UpdateController.self) private var updater
     @State private var libreOffice: String??
 
     var body: some View {
@@ -92,6 +93,20 @@ struct GeneralSettings: View {
                     case .some(.none): StatusDot(kind: .error, text: "未找到")
                     }
                     Button("重新检测") { detect() }.buttonStyle(.borderless)
+                }
+            }
+            SettingsGroup(title: "更新") {
+                SettingsRow(label: "当前版本", hint: "新版本发布在 GitHub：\(Updater.repo)") {
+                    Text(updater.currentVersion).monospacedDigit()
+                    Button {
+                        Task { await updater.check(manual: true) }
+                    } label: {
+                        if updater.phase == .checking { ProgressView().controlSize(.small) } else { Text("检查更新") }
+                    }
+                    .disabled(updater.phase == .checking || updater.phase == .downloading)
+                }
+                SettingsRow(label: "自动检查更新", hint: "打开软件时检查，有新版本会提示") {
+                    Toggle("", isOn: Binding(get: { updater.autoCheck }, set: { updater.autoCheck = $0 })).toggleStyle(.switch).labelsHidden()
                 }
             }
         }

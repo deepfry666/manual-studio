@@ -172,6 +172,56 @@ struct FeatureTests {
         #expect(throws: StudioError.self) { try ctx.core.planExport([a, b], targetDir: desktop, groupName: "a/b") }
     }
 
+    @Test("在线更新：版本比较、解析发布信息、校验安装包、替换脚本")
+    func updater() throws {
+        #expect(Updater.isNewer("1.10.0", than: "1.9.2"))
+        #expect(Updater.isNewer("v1.1.0", than: "1.0.0"))
+        #expect(!Updater.isNewer("1.1.0", than: "1.1.0"))
+        #expect(!Updater.isNewer("1.0", than: "1.0.0"))
+        #expect(!Updater.isNewer("1.0.9", than: "1.1.0"))
+        let digest = String(repeating: "a", count: 64)
+        let json: JSON = .obj(["tag_name": "v1.2.0", "name": "软件指南生成器 1.2.0", "body": "说明", "html_url": "https://github.com/x/y/releases/tag/v1.2.0", "draft": false, "prerelease": false,
+                               "assets": [.obj(["name": "-1.2.0.zip", "browser_download_url": "https://example.com/bad.zip"]),
+                                          .obj(["name": "ManualStudio-1.2.0.zip", "browser_download_url": "https://example.com/ok.zip", "size": 6290174, "digest": .string("sha256:\(digest)")])]])
+        let release = try #require(Updater.parseRelease(json))
+        #expect(release.version == "1.2.0" && release.assetURL == "https://example.com/ok.zip" && release.sha256 == digest && release.assetSize == 6290174)
+        #expect(Updater.parseRelease(json.merging(["prerelease": true])) == nil, "预发布不算")
+        #expect(Updater.parseRelease(json.merging(["assets": []])) == nil, "没有安装包不算")
+
+        // 安装包：哈希不对拒绝；包标识、版本号都要对上
+        let root = try FS.makeTempDirectory(prefix: "update-")
+        defer { FS.remove(root) }
+        let app = Path.join(root, "src", "软件指南生成器.app")
+        try FS.mkdirp(Path.join(app, "Contents"))
+        (["CFBundleIdentifier": "local.manual-studio.native", "CFBundleShortVersionString": "1.2.0"] as NSDictionary).write(toFile: Path.join(app, "Contents", "Info.plist"), atomically: true)
+        let zip = Path.join(root, "u.zip")
+        let ditto = Process()
+        ditto.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        ditto.arguments = ["-c", "-k", "--keepParent", app, zip]
+        try ditto.run(); ditto.waitUntilExit()
+        #expect(throws: StudioError.self) { try Updater.extract(zip: zip, release: release, bundleId: "local.manual-studio.native", into: Path.join(root, "a")) }
+        let good = Updater.Release(version: "1.2.0", title: "", notes: "", pageURL: "", assetURL: "", assetSize: 0, sha256: sha256Hex(try FS.read(zip)))
+        let extracted = try Updater.extract(zip: zip, release: good, bundleId: "local.manual-studio.native", into: Path.join(root, "b"))
+        #expect(Path.basename(extracted) == "软件指南生成器.app")
+        #expect(throws: StudioError.self) { try Updater.extract(zip: zip, release: good, bundleId: "other.app", into: Path.join(root, "c")) }
+        let wrongVersion = Updater.Release(version: "1.3.0", title: "", notes: "", pageURL: "", assetURL: "", assetSize: 0, sha256: nil)
+        #expect(throws: StudioError.self) { try Updater.extract(zip: zip, release: wrongVersion, bundleId: "local.manual-studio.native", into: Path.join(root, "d")) }
+
+        // 替换脚本：真实跑一遍（进程号用一个已经结束的），旧的被换掉，失败不会丢 App
+        let target = Path.join(root, "装好的.app")
+        try FS.mkdirp(Path.join(target, "Contents"))
+        try FS.write(Path.join(target, "old.txt"), "old")
+        let script = Updater.installScript(pid: 999_999, newApp: extracted, target: target).replacingOccurrences(of: "open '", with: ": '")
+        try FS.write(Path.join(root, "install.sh"), script)
+        let sh = Process()
+        sh.executableURL = URL(fileURLWithPath: "/bin/sh")
+        sh.arguments = [Path.join(root, "install.sh")]
+        try sh.run(); sh.waitUntilExit()
+        #expect(FS.exists(Path.join(target, "Contents", "Info.plist")))
+        #expect(!FS.exists(Path.join(target, "old.txt")))
+        #expect(!FS.exists(target + ".old-update"))
+    }
+
     @Test("系统字样：软件名没指明系统时，规划、文案、设计说明里出现 iPhone/安卓 等就打回")
     func platformTerms() {
         #expect(!softwareNameNamesPlatform("云伴日程 V1.0"))

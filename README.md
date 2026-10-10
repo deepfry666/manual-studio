@@ -6,7 +6,7 @@ macOS 桌面 App：输入软件名，自动规划界面、生成截图、撰写�
 
 | | 位置 | 状态 |
 |---|---|---|
-| **原生版（以此为准）** | [`native/`](native/) | SwiftUI，当前唯一维护和发版的版本，见 [native/README.md](native/README.md) |
+| **原生版（以此为准）** | [`native/`](native/) | SwiftUI，当前唯一维护和发版的版本，支持在线更新，见 [native/README.md](native/README.md) |
 | Electron 旧版 | `electron/`、`core/`、`web/` | 已定档在标签 `electron-v0.1.0-final`，**不再修改、不再发版**，只留作对照 |
 
 - 新功能和修复只做在 `native/` 里。
