@@ -327,6 +327,49 @@ struct EdgeTests {
         #expect(FS.exists(ctx.workspace))
     }
 
+    @Test("批次：批量新建记下批次；以前的按 1 秒内连续新建推断；导入的不分批")
+    func batchesGrouping() async throws {
+        let entries: [JSON] = [
+            .obj(["dir": "/w/a", "addedAt": "2026-10-10T08:01:16.209Z", "origin": "created"]),
+            .obj(["dir": "/w/b", "addedAt": "2026-10-10T08:01:16.213Z", "origin": "created"]),
+            .obj(["dir": "/w/c", "addedAt": "2026-10-10T08:01:16.900Z", "origin": "created"]),
+            .obj(["dir": "/w/single", "addedAt": "2026-10-10T09:00:00.000Z", "origin": "created"]),
+            .obj(["dir": "/w/i1", "addedAt": "2026-10-09T09:15:29.765Z", "origin": "imported"]),
+            .obj(["dir": "/w/i2", "addedAt": "2026-10-09T09:15:29.778Z", "origin": "imported"]),
+            .obj(["dir": "/w/x", "addedAt": "2026-10-10T10:00:00.000Z", "origin": "created", "batchId": "batch-1"]),
+            .obj(["dir": "/w/y", "addedAt": "2026-10-10T10:05:00.000Z", "origin": "created", "batchId": "batch-1"]),
+        ]
+        let batches = projectBatches(entries)
+        #expect(batches["/w/a"]?["count"]?.int == 3 && batches["/w/a"]?["id"] == batches["/w/c"]?["id"])
+        #expect(batches["/w/single"] == nil && batches["/w/i1"] == nil)
+        #expect(batches["/w/x"]?["id"]?.string == "batch-1" && batches["/w/y"]?["count"]?.int == 2)
+
+        let ctx = try await CoreContext()
+        let result = try await ctx.core.createProjectsFromList("批次甲 V1.0\n批次乙 V1.0\n批次丙 V1.0", screenCount: 2, platform: "iPhone", wantDesign: false)
+        let listed = try await ctx.core.listProjects().filter { result.created.contains($0["dir"]?.string ?? "") }
+        #expect(listed.count == 3)
+        #expect(Set(listed.compactMap { $0["batch"]?["id"]?.string }).count == 1)
+        #expect(listed.first?["batch"]?["id"]?.string?.hasPrefix("batch-") == true)
+    }
+
+    @Test("同时处理项目设为不限（0）：队列里的项目全部同时开跑", .timeLimit(.minutes(2)))
+    func batchUnlimited() async throws {
+        let ctx = try await CoreContext(relayBehavior: { _, _ in RelayPlan(delayMs: 600) })
+        try await ctx.core.updateSettings(["pipeline": ["batchConcurrency": 0], "image": ["globalConcurrency": 0]])
+        var dirs: [String] = []
+        for index in 1...4 { dirs.append(try await ctx.create("不限并发\(index) V1.0", screenCount: 2)) }
+        await ctx.core.batch.enqueue(dirs)
+        var maxRunning = 0
+        for _ in 0..<150 {
+            let items = ctx.core.batch.list().items
+            maxRunning = max(maxRunning, items.filter { $0["status"]?.string == "running" }.count)
+            if items.allSatisfy({ $0["status"]?.string == "done" }) { break }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        #expect(maxRunning == 4)
+        #expect(ctx.core.batch.list().items.allSatisfy { $0["status"]?.string == "done" })
+    }
+
     @Test("截图编号不合法会被拒绝；项目运行中不能修改", .timeLimit(.minutes(2)))
     func safety() async throws {
         let ctx = try await CoreContext(relayBehavior: { _, _ in RelayPlan(delayMs: 800) })

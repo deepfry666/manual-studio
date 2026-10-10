@@ -55,7 +55,9 @@ public final class BatchQueue: @unchecked Sendable {
     private func pumpInner() async {
         if state.withLock({ $0.paused }) { return }
         let settings = try? await settingsStore.get()
-        let limit = max(1, settings?.pipeline.batchConcurrency ?? 2)
+        // 0 表示不限：队列里的项目全部同时开跑
+        let configured = settings?.pipeline.batchConcurrency ?? 2
+        let limit = configured <= 0 ? Int.max : configured
         while active.withLock({ $0.count }) < limit {
             guard let item = state.withLock({ $0.items.first { $0["status"]?.string == "queued" } }), let id = item["id"]?.string else { break }
             let projectDir = item["projectDir"]?.string ?? ""
@@ -236,4 +238,41 @@ public func parseBatchList(_ text: String) -> [BatchRow] {
         rows.append(BatchRow(softwareName: cells[0], screenCount: count.flatMap { $0 > 0 ? $0 : nil }, emphasis: cells.count > 2 ? cells[2] : "", notes: notes))
     }
     return rows
+}
+
+/// 批次：批量新建记下的 batchId；以前没记的，按新建时间推断（1 秒内连续新建的算同一批，至少 2 个）。
+/// 返回 dir → {id, label, count}，label 形如「10/10 16:01 批量新建」。导入的历史项目不分批。
+public func projectBatches(_ entries: [JSON]) -> [String: JSON] {
+    struct Member { let dir: String; let at: Double; let explicit: String? }
+    let created = entries.compactMap { entry -> Member? in
+        guard entry["origin"]?.string != "imported", let dir = entry["dir"]?.string, let at = parseISO(entry["addedAt"]?.string) else { return nil }
+        return Member(dir: dir, at: at, explicit: entry["batchId"]?.string)
+    }.sorted { $0.at < $1.at }
+    var groups: [String: [Member]] = [:]
+    var previous: Member?
+    var current = ""
+    for member in created {
+        if let explicit = member.explicit {
+            groups[explicit, default: []].append(member)
+            previous = nil
+            continue
+        }
+        if let previous, member.at - previous.at <= 1000 {
+            groups[current, default: []].append(member)
+        } else {
+            current = "auto-\(Int(member.at))"
+            groups[current] = [member]
+        }
+        previous = member
+    }
+    var result: [String: JSON] = [:]
+    for (id, members) in groups where members.count > 1 {
+        let first = members.map(\.at).min() ?? 0
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MM/dd HH:mm"
+        let label = "\(formatter.string(from: Date(timeIntervalSince1970: first / 1000))) 批量新建"
+        let info: JSON = .obj(["id": .string(id), "label": .string(label), "count": .number(Double(members.count)), "at": .number(first)])
+        for member in members { result[member.dir] = info }
+    }
+    return result
 }

@@ -61,6 +61,8 @@ struct MainSplitView: View {
                     }
                 case .models:
                     NavigationStack { ModelsView() }
+                case .stats:
+                    NavigationStack { StatsView() }
                 case .settings:
                     NavigationStack { SettingsView() }
                 }

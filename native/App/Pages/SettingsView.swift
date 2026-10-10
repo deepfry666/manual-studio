@@ -69,7 +69,7 @@ struct GeneralSettings: View {
                     Toggle("", isOn: Binding(get: { pipeline.reviewPlanSingle }, set: { model.saveSettings(["pipeline": ["reviewPlanSingle": .bool($0)]]) })).toggleStyle(.switch).labelsHidden()
                 }
                 SettingsRow(label: "批量同时处理", info: "比如 50 个项目设 3：3 个同时跑，跑完一个补一个。生图总并发由生图线路控制，调大这里不会把线路挤爆。") {
-                    NumberField(value: pipeline.batchConcurrency, range: 1...8, suffix: "个项目") { model.saveSettings(["pipeline": ["batchConcurrency": .number(Double($0))]]) }
+                    ConcurrencyPicker(value: pipeline.batchConcurrency, presets: PROJECT_CONCURRENCY_PRESETS, unit: "个项目") { model.saveSettings(["pipeline": ["batchConcurrency": .number(Double($0))]]) }
                 }
                 SettingsRow(label: "默认截图数", hint: "新建项目时默认用这个屏数") {
                     NumberField(value: pipeline.defaultScreenCount, range: 2...15, suffix: "屏") { model.saveSettings(["pipeline": ["defaultScreenCount": .number(Double($0))]]) }

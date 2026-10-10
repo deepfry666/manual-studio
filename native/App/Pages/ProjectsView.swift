@@ -8,10 +8,17 @@ private let STATUS_FILTERS: [(value: String, label: String)] = [
     ("needs-attention", "需要处理"), ("idle", "未完成"), ("font", "PDF 字体不对"), ("imported", "导入的历史项目"), ("readonly", "只读"),
 ]
 
+/// 时间筛选：项目在那段时间里新建、完成、生成交付包或有改动，任意一样都算；用本机时区的自然日。
+private let TIME_FILTERS: [(value: String, label: String)] = [("all", "全部时间"), ("today", "今天"), ("yesterday", "昨天"), ("week", "最近 7 天")]
+
 struct ProjectsView: View {
     @Environment(AppModel.self) private var model
     @State private var query = ""
     @State private var statusFilter = "all"
+    @State private var timeFilter = "all"
+    @State private var batchFilter = "all"
+    @State private var pickedDate = Date()
+    @State private var datePickerOpen = false
     @State private var selection = Set<String>()
     @State private var exportDirs: ExportRequest?
     @State private var pdfTargets: [String]?
@@ -25,6 +32,8 @@ struct ProjectsView: View {
     var rows: [ProjectRow] {
         model.projects.filter { project in
             if !query.isEmpty, !project.name.lowercased().contains(query.lowercased()) { return false }
+            if !matchesTime(project) { return false }
+            if batchFilter != "all", project.batchId != batchFilter { return false }
             switch statusFilter {
             case "all": return true
             case "imported": return project.origin == "imported"
@@ -32,6 +41,43 @@ struct ProjectsView: View {
             case "font": return project.pdfFontProblem
             default: return project.status == statusFilter
             }
+        }
+    }
+
+    /// 所有批次，最新的在前
+    var batches: [(id: String, label: String, count: Int)] {
+        var seen: [String: (label: String, count: Int, at: Double)] = [:]
+        for project in model.projects {
+            guard let id = project.batchId, seen[id] == nil else { continue }
+            seen[id] = (project.batchLabel, project.batchCount, project.json["batch"]?["at"]?.number ?? 0)
+        }
+        return seen.sorted { $0.value.at > $1.value.at }.map { (id: $0.key, label: $0.value.label, count: $0.value.count) }
+    }
+
+    var rangeLabel: String {
+        if batchFilter != "all", let batch = batches.first(where: { $0.id == batchFilter }) { return "\(batch.label)（\(batch.count)）" }
+        if timeFilter == "date" { return pickedDate.formatted(.dateTime.month(.defaultDigits).day().locale(Locale(identifier: "zh_CN"))) }
+        return TIME_FILTERS.first { $0.value == timeFilter }?.label ?? "全部时间"
+    }
+
+    func matchesTime(_ project: ProjectRow) -> Bool {
+        guard timeFilter != "all" else { return true }
+        // 导入的历史项目不按导入那天算：只看导入后的生成、完成和改动（导入时那几条日志不算）
+        let imported = project.origin == "imported"
+        let added = parseISO(project.addedAt)
+        var stamps = [project.lastBuildAt ?? "", project.json["timing"]?["completedAt"]?.string ?? ""]
+        if !imported { stamps.append(project.addedAt) }
+        if let updated = parseISO(project.updatedAt), !imported || updated - (added ?? 0) > 10 * 60_000 { stamps.append(project.updatedAt) }
+        let times = stamps.compactMap { parseISO($0) }.map { Date(timeIntervalSince1970: $0 / 1000) }
+        let calendar = Calendar.current
+        switch timeFilter {
+        case "today": return times.contains { calendar.isDateInToday($0) }
+        case "yesterday": return times.contains { calendar.isDateInYesterday($0) }
+        case "week":
+            let start = calendar.date(byAdding: .day, value: -6, to: calendar.startOfDay(for: Date()))!
+            return times.contains { $0 >= start }
+        case "date": return times.contains { calendar.isDate($0, inSameDayAs: pickedDate) }
+        default: return true
         }
     }
 
@@ -53,6 +99,12 @@ struct ProjectsView: View {
         }
         .navigationTitle("历史项目")
         .onChange(of: model.devSelection) { _, next in if let next { selection = next } }
+        .onChange(of: model.devTimeFilter) { _, next in
+            guard let value = next?.components(separatedBy: "#").first else { return }
+            if value == "picker" { datePickerOpen = true }
+            else if value.hasPrefix("date:"), let date = ISO8601DateFormatter().date(from: value.dropFirst(5) + "T12:00:00Z") { pickedDate = date; timeFilter = "date" }
+            else { timeFilter = value }
+        }
         .navigationSubtitle(subtitle)
         .searchable(text: $query, placement: .toolbar, prompt: "按软件名搜索")
         .toolbar { toolbar }
@@ -77,7 +129,9 @@ struct ProjectsView: View {
 
     var subtitle: String {
         let running = model.projects.filter { $0.status == "running" }.count
-        return running > 0 ? "共 \(model.projects.count) 个 · \(running) 个运行中" : "共 \(model.projects.count) 个"
+        let filtered = !query.isEmpty || statusFilter != "all" || timeFilter != "all" || batchFilter != "all"
+        let total = filtered ? "显示 \(rows.count) / 共 \(model.projects.count) 个" : "共 \(model.projects.count) 个"
+        return running > 0 ? "\(total) · \(running) 个运行中" : total
     }
 
     // MARK: 表格
@@ -105,11 +159,11 @@ struct ProjectsView: View {
                 }
                 .padding(.vertical, 3)
             }
-            .width(min: 220, ideal: 320)
+            .width(min: 200, ideal: 260)
             TableColumn("状态") { row in statusTag(row) }
-                .width(min: 80, ideal: 100)
+                .width(min: 76, ideal: 90)
             TableColumn("进度") { row in ProgressCell(row: row) }
-                .width(min: 180, ideal: 250)
+                .width(min: 150, ideal: 180)
             TableColumn("用时") { row in
                 if let timing = row.timing {
                     Text(formatDurationUI(row.mainDurationMs))
@@ -119,7 +173,7 @@ struct ProjectsView: View {
                     Text("—").foregroundStyle(.secondary)
                 }
             }
-            .width(min: 70, ideal: 90)
+            .width(min: 64, ideal: 80)
             TableColumn("交付") { row in
                 if let files = row.bundleFiles {
                     Text("\(files) 个文件")
@@ -129,9 +183,9 @@ struct ProjectsView: View {
                     Text("—").foregroundStyle(.secondary)
                 }
             }
-            .width(min: 60, ideal: 80)
+            .width(min: 56, ideal: 70)
             TableColumn("最近构建") { row in Text(formatTime(row.lastBuildAt)).foregroundStyle(.secondary).monospacedDigit() }
-                .width(min: 80, ideal: 100)
+                .width(min: 76, ideal: 90)
             TableColumn("") { row in
                 Button {
                     model.open(row.dir)
@@ -208,6 +262,11 @@ struct ProjectsView: View {
             Button("在访达中显示") { model.reveal(row.dir) }
             Divider()
         }
+        if let batchId = targets.first?.batchId {
+            let members = model.projects.filter { $0.batchId == batchId }
+            Button("选中同一批（\(members.count) 个，\(targets[0].batchLabel)）") { selection = Set(members.map(\.dir)) }
+            Divider()
+        }
         Button("开始处理") { start(targets) }
         Button("导出…") { exportDirs = ExportRequest(dirs: targets.map(\.dir)) }
         Button("重新导出 PDF") { askPdf(targets) }
@@ -231,6 +290,47 @@ struct ProjectsView: View {
             }
             .pickerStyle(.menu)
             .frame(width: 140)
+        }
+        ToolbarItem(placement: .navigation) {
+            // 时间和批次合在一个菜单里，免得工具栏太挤
+            Menu {
+                Picker("时间", selection: $timeFilter) {
+                    ForEach(TIME_FILTERS, id: \.value) { Text($0.label).tag($0.value) }
+                    if timeFilter == "date" { Text(rangeLabel).tag("date") }
+                }
+                .pickerStyle(.inline)
+                Button("选择日期…") { datePickerOpen = true }
+                if !batches.isEmpty {
+                    Picker("批量新建的批次", selection: $batchFilter) {
+                        Text("全部批次").tag("all")
+                        ForEach(batches, id: \.id) { batch in Text("\(batch.label)（\(batch.count) 个）").tag(batch.id) }
+                    }
+                    .pickerStyle(.inline)
+                }
+            } label: {
+                Label(rangeLabel, systemImage: "calendar")
+                    .labelStyle(.titleAndIcon)
+            }
+            .help("按时间或批次筛选：选一批后点「全选」就能一起导出")
+            .popover(isPresented: $datePickerOpen, arrowEdge: .bottom) {
+                VStack(alignment: .trailing, spacing: 10) {
+                    DatePicker("", selection: $pickedDate, in: ...Date(), displayedComponents: .date)
+                        .datePickerStyle(.graphical)
+                        .labelsHidden()
+                        .environment(\.locale, Locale(identifier: "zh_CN"))
+                    HStack {
+                        Button("取消") { datePickerOpen = false }
+                        Button("筛选这一天") {
+                            timeFilter = "date"
+                            batchFilter = "all"
+                            datePickerOpen = false
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .keyboardShortcut(.defaultAction)
+                    }
+                }
+                .padding(14)
+            }
         }
         if selection.isEmpty {
             ToolbarItem(placement: .primaryAction) {
@@ -289,7 +389,7 @@ struct ProjectsView: View {
         }
         Task {
             await model.core?.batch.enqueue(dirs)
-            model.toast(.success, "已开始：\(dirs.count) 个项目，每次同时处理 \(model.settings.pipeline.batchConcurrency) 个")
+            model.toast(.success, "已开始：\(dirs.count) 个项目，同时处理 \(concurrencyText(model.settings.pipeline.batchConcurrency))")
             selection = []
         }
     }
@@ -369,7 +469,7 @@ struct QueueBar: View {
                 .monospacedDigit()
                 HStack(spacing: 6) {
                     Text("同时处理")
-                    NumberField(value: model.settings.pipeline.batchConcurrency, range: 1...8, suffix: "个项目", width: 40) { value in
+                    ConcurrencyPicker(value: model.settings.pipeline.batchConcurrency, presets: PROJECT_CONCURRENCY_PRESETS, unit: "个项目") { value in
                         Task {
                             await model.perform { _ = try await model.core?.updateSettings(["pipeline": ["batchConcurrency": .number(Double(value))]]) }
                             await model.reloadSettings()

@@ -612,3 +612,28 @@ struct AdaptiveColumns: Layout {
         }
     }
 }
+
+/// 并发数快速选择：常用档位 + 当前值 + 「不限」（存成 0）。
+struct ConcurrencyPicker: View {
+    let value: Int
+    let presets: [Int]
+    let unit: String
+    let onChange: (Int) -> Void
+
+    var body: some View {
+        let options = Array(Set(presets + (value > 0 ? [value] : []))).sorted()
+        Picker("", selection: Binding(get: { max(0, value) }, set: { onChange($0) })) {
+            ForEach(options, id: \.self) { Text("\($0) \(unit)").tag($0) }
+            Divider()
+            Text("不限").tag(0)
+        }
+        .labelsHidden()
+        .fixedSize()
+    }
+}
+
+let PROJECT_CONCURRENCY_PRESETS = [1, 2, 3, 4, 5, 6, 8, 10]
+let IMAGE_CONCURRENCY_PRESETS = [2, 4, 6, 8, 10, 15, 20, 30, 50]
+
+/// 「每次同时处理 N 个」这类文字；0 表示不限。
+func concurrencyText(_ value: Int, _ unit: String = "个") -> String { value <= 0 ? "不限" : "\(value) \(unit)" }

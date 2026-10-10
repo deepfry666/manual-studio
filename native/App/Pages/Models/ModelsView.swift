@@ -297,7 +297,7 @@ struct StrategyGroups: View {
                     .frame(width: 120, alignment: .trailing)
                 }
                 SettingsRow(label: "全局并发上限", info: "所有项目加起来同时生成的图片数。") {
-                    NumberField(value: image.globalConcurrency, range: 1...50, suffix: "张") { save(["globalConcurrency": .number(Double($0))]) }
+                    ConcurrencyPicker(value: image.globalConcurrency, presets: IMAGE_CONCURRENCY_PRESETS, unit: "张") { save(["globalConcurrency": .number(Double($0))]) }
                 }
                 SettingsRow(label: "每屏最多尝试") {
                     NumberField(value: image.maxAttemptsPerScreen, range: 1...10, suffix: "次") { save(["maxAttemptsPerScreen": .number(Double($0))]) }

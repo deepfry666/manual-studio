@@ -372,7 +372,8 @@ actor GatewayJob {
         self.request = request
         let settings = try await gateway.getSettings()
         self.settings = settings
-        gateway.globalSemaphore.setLimit(settings.image.globalConcurrency == 0 ? 10 : settings.image.globalConcurrency)
+        // 0 表示不限（只受每条线路自己的并发上限约束）
+        gateway.globalSemaphore.setLimit(settings.image.globalConcurrency <= 0 ? Int.max : settings.image.globalConcurrency)
         providers = settings.providers.filter(\.enabled)
         if providers.isEmpty { throw StudioError("还没有可用的生图线路，请先到「生图线路」里添加并启用") }
         maxAttempts = settings.image.maxAttemptsPerScreen == 0 ? 4 : settings.image.maxAttemptsPerScreen

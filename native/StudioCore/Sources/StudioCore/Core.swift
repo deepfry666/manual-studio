@@ -310,7 +310,13 @@ public final class StudioCore: @unchecked Sendable {
         let index = readIndex()
         let settings = try await settingsStore.get()
         let queueByDir = queueIndex()
-        return index["projects"].items.compactMap { summarize($0, settings, queueByDir) }
+        let entries = index["projects"].items
+        let batches = projectBatches(entries)
+        return entries.compactMap { entry in
+            guard var summary = summarize(entry, settings, queueByDir) else { return nil }
+            if let batch = batches[entry["dir"]?.string ?? ""] { summary["batch"] = batch }
+            return summary
+        }
     }
 
     public func getProgress(_ dir: String) -> JSON? { pipeline.getProgress(dir) }
@@ -397,6 +403,16 @@ public final class StudioCore: @unchecked Sendable {
                 created.append(dir)
             } catch {
                 errors.append("\(row.softwareName)：\(messageOf(error))")
+            }
+        }
+        // 记下批次，历史项目里可以按批次一次选中
+        if created.count > 1 {
+            let batchId = "batch-\(randomHex(4))"
+            let members = Set(created)
+            try await updateIndex { projects in
+                for index in projects.indices where members.contains(projects[index]["dir"]?.string ?? "") {
+                    projects[index]["batchId"] = .string(batchId)
+                }
             }
         }
         return (created, errors)
@@ -573,6 +589,11 @@ public final class StudioCore: @unchecked Sendable {
 
     public func queryCalls(limit: Int = 200, providerId: String? = nil) -> [JSON] { callLog.query(limit: limit, providerId: providerId) }
     public func queryLlmCalls(limit: Int = 200) -> [JSON] { llmLog.query(limit: limit) }
+    /// 统计页数据；days 为 nil 时统计全部。
+    public func usageStats(days: Int?) async throws -> JSON {
+        let since = days.map { Calendar.current.date(byAdding: .day, value: -($0 - 1), to: Calendar.current.startOfDay(for: Date()))!.timeIntervalSince1970 * 1000 }
+        return UsageStats.compute(imageCalls: callLog.all(), llmCalls: llmLog.all(), projects: try await listProjects(), sinceMs: since)
+    }
     public func pendingJobs() -> [JSON] { ledger.list { ["needs-attention", "interrupted"].contains($0["state"]?.string ?? "") } }
     public func dismissJob(_ jobId: String) async { await ledger.dismiss(jobId) }
 

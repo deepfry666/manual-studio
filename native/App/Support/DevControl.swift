@@ -55,6 +55,7 @@ final class DevControl {
         case "hold":
             model.devHoldBackground = value == "1"
             if !model.devHoldBackground { model.quitIfIdleInBackground() }
+        case "timeFilter": model.devTimeFilter = value + "#" + String(Date().timeIntervalSince1970)
         case "close":
             NSApp.windows.first { $0.isVisible && $0.canBecomeMain }?.performClose(nil)
         case "activate":

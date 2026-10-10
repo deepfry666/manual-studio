@@ -79,6 +79,10 @@ struct ProjectRow: Identifiable, Hashable {
     var lastError: String? { json["lastError"]?.string }
     var updatedAt: String { json["updatedAt"]?.string ?? "" }
     var addedAt: String { json["addedAt"]?.string ?? "" }
+    /// 同一次批量新建的项目（没有批次时为 nil）
+    var batchId: String? { json["batch"]?["id"]?.string }
+    var batchLabel: String { json["batch"]?["label"]?.string ?? "" }
+    var batchCount: Int { json["batch"]?["count"]?.int ?? 0 }
 
     /// 用时列：完成用时，没完成时显示累计
     var mainDurationMs: Double? { timing.flatMap { $0["completedMs"]?.number ?? $0["totalMs"]?.number } }

@@ -206,8 +206,15 @@ struct BatchProjectForm: View {
                     }
                     SettingsRow(label: "设计说明章节") { Toggle("", isOn: $wantDesign).toggleStyle(.switch).labelsHidden() }
                     CodeSourceRow()
-                    SettingsRow(label: "创建后直接开始", hint: "每次同时处理 \(model.settings.pipeline.batchConcurrency) 个，不停下确认规划") {
+                    SettingsRow(label: "创建后直接开始", hint: "不停下确认规划") {
                         Toggle("", isOn: $startNow).toggleStyle(.switch).labelsHidden()
+                    }
+                    // 默认就是设置里的值；在这里改会同时改设置，正在跑的批量也立刻按新值调整
+                    SettingsRow(label: "同时处理项目", hint: "不限：全部同时开跑") {
+                        ConcurrencyPicker(value: model.settings.pipeline.batchConcurrency, presets: PROJECT_CONCURRENCY_PRESETS, unit: "个") { model.saveSettings(["pipeline": ["batchConcurrency": .number(Double($0))]]) }
+                    }
+                    SettingsRow(label: "生图并发上限", hint: "所有项目合计；不限时只受每条线路自己的上限约束") {
+                        ConcurrencyPicker(value: model.settings.image.globalConcurrency, presets: IMAGE_CONCURRENCY_PRESETS, unit: "张") { model.saveSettings(["image": ["globalConcurrency": .number(Double($0))]]) }
                     }
                 }
             }

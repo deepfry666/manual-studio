@@ -172,6 +172,42 @@ struct FeatureTests {
         #expect(throws: StudioError.self) { try ctx.core.planExport([a, b], targetDir: desktop, groupName: "a/b") }
     }
 
+    @Test("统计：按自然日汇总生图、大模型、项目；时间范围；测速和导入不算")
+    func usageStats() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        let images: [JSON] = [
+            .obj(["ts": "2026-10-10T02:00:00.000Z", "ok": true, "role": "primary", "providerName": "甲线路", "durationMs": 20000]),
+            .obj(["ts": "2026-10-10T03:00:00.000Z", "ok": true, "role": "hedge", "providerName": "乙线路", "durationMs": 40000]),
+            .obj(["ts": "2026-10-10T04:00:00.000Z", "ok": false, "role": "primary", "providerName": "甲线路", "kind": "timeout", "durationMs": 90000]),
+            .obj(["ts": "2026-10-10T05:00:00.000Z", "ok": true, "role": "probe", "providerName": "甲线路", "durationMs": 10000]),
+            .obj(["ts": "2026-10-10T06:00:00.000Z", "ok": false, "role": "hedge", "kind": "aborted", "providerName": "乙线路"]),
+            .obj(["ts": "2026-09-01T02:00:00.000Z", "ok": true, "role": "history", "model": "gpt-image-2", "durationMs": 60000]),
+            .obj(["ts": "2026-10-09T17:00:00.000Z", "ok": true, "role": "primary", "providerName": "甲线路", "durationMs": 30000]),
+        ]
+        let llm: [JSON] = [
+            .obj(["ts": "2026-10-10T02:00:00.000Z", "ok": true, "step": "plan", "model": "m1", "durationMs": 10000]),
+            .obj(["ts": "2026-10-10T02:10:00.000Z", "ok": false, "step": "content", "model": "m1", "durationMs": 5000]),
+        ]
+        let projects: [JSON] = [
+            .obj(["addedAt": "2026-10-10T01:00:00.000Z", "origin": "created", "timing": .obj(["completedAt": "2026-10-10T02:30:00.000Z", "completedMs": 300000])]),
+            .obj(["addedAt": "2026-10-10T01:00:00.000Z", "origin": "imported"]),
+        ]
+        let since = parseISO("2026-10-09T16:00:00.000Z")  // 上海时间 10/10 零点
+        let stats = UsageStats.compute(imageCalls: images, llmCalls: llm, projects: projects, sinceMs: since, calendar: calendar)
+        #expect(stats["images"]?["generated"]?.int == 3, "成功的 3 张（含 10/10 零点后的那张），测速不算")
+        #expect(stats["images"]?["requests"]?.int == 4, "取消的、测速的不算请求")
+        #expect(stats["images"]?["avgSec"]?.number == 30)
+        #expect(stats["llm"]?["calls"]?.int == 2 && stats["llm"]?["ok"]?.int == 1)
+        #expect(stats["projects"]?["created"]?.int == 1 && stats["projects"]?["completed"]?.int == 1 && stats["projects"]?["avgSec"]?.number == 300)
+        #expect(stats["byProvider"]?[0]?["name"]?.string == "甲线路" && stats["byProvider"]?[0]?["images"]?.int == 2)
+        #expect(stats["daily"]?["2026-10-10"]?["images"]?.int == 3, "10/10（上海）：UTC 02、03 点两张 + 前一天 UTC 17 点那张")
+        #expect(stats["daily"]?["2026-09-01"]?["images"]?.int == 1, "热力图包含全部历史")
+        #expect(stats["daily"]?["2026-10-10"]?["created"]?.int == 1, "导入的不算新建")
+        let all = UsageStats.compute(imageCalls: images, llmCalls: llm, projects: projects, sinceMs: nil, calendar: calendar)
+        #expect(all["images"]?["generated"]?.int == 4)
+    }
+
     @Test("在线更新：版本比较、解析发布信息、校验安装包、替换脚本")
     func updater() throws {
         #expect(Updater.isNewer("1.10.0", than: "1.9.2"))

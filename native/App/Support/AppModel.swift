@@ -5,7 +5,7 @@ import SwiftUI
 import UserNotifications
 
 enum SidebarItem: String, Hashable, CaseIterable, Identifiable {
-    case new, projects, models, settings
+    case new, projects, models, stats, settings
     var id: String { rawValue }
 
     var title: String {
@@ -13,6 +13,7 @@ enum SidebarItem: String, Hashable, CaseIterable, Identifiable {
         case .new: "新建项目"
         case .projects: "历史项目"
         case .models: "模型与线路"
+        case .stats: "统计"
         case .settings: "设置"
         }
     }
@@ -22,6 +23,7 @@ enum SidebarItem: String, Hashable, CaseIterable, Identifiable {
         case .new: "plus.circle"
         case .projects: "square.grid.2x2"
         case .models: "cpu"
+        case .stats: "chart.bar.xaxis"
         case .settings: "gearshape"
         }
     }
@@ -105,6 +107,8 @@ final class AppModel {
     }
     /// 开发自检：假装有任务在跑（MS_DEV_CONTROL 的 hold=1）
     var devHoldBackground = false
+    /// 开发自检：历史项目的时间筛选（today / week / date:2026-10-09 / picker）
+    var devTimeFilter: String?
 
     /// 窗口已经关掉、活也干完了，就退出（关窗时有任务在跑才会留在后台）。
     func quitIfIdleInBackground() {
