@@ -56,9 +56,12 @@ final class DevControl {
             model.devHoldBackground = value == "1"
             if !model.devHoldBackground { model.quitIfIdleInBackground() }
         case "timeFilter": model.devTimeFilter = value + "#" + String(Date().timeIntervalSince1970)
+        case "minimize":
+            NSApp.windows.first { $0.isVisible && $0.canBecomeMain }?.miniaturize(nil)
         case "close":
             NSApp.windows.first { $0.isVisible && $0.canBecomeMain }?.performClose(nil)
         case "activate":
+            NSApp.windows.filter(\.isMiniaturized).forEach { $0.deminiaturize(nil) }
             NSApp.activate(ignoringOtherApps: true)
             NSApp.windows.first { $0.isVisible }?.makeKeyAndOrderFront(nil)
         default: break

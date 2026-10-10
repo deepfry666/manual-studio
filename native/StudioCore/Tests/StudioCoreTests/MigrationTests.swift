@@ -70,5 +70,12 @@ struct MigrationTests {
         #expect(await !empty.has("image:p1"))
         #expect(FS.exists(Path.join(denied, "secrets.key")))
         #expect(FS.exists(Path.join(denied, "secrets.json.keychain-backup")))
+
+        // 已有的密钥文件损坏：报错，不覆盖（覆盖会让已保存的密钥全部作废）；界面显示「没有密钥」
+        try FS.write(Path.join(dir, "secrets.key"), "broken")
+        let broken = LocalSecrets.open(dataDir: dir) { nil }
+        #expect(await !broken.has("image:p1"))
+        await #expect(throws: StudioError.self) { try await broken.set("image:p2", "value") }
+        #expect(FS.readTextIfExists(Path.join(dir, "secrets.key")) == "broken")
     }
 }

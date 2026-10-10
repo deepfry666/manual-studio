@@ -65,6 +65,8 @@ final class AppModel {
     /// 开发自检：MS_DATA_DIR 换一个数据目录，MS_TEST_MEMORY_SECRETS 密钥只放内存（不碰钥匙串）
     let dataDir = ProcessInfo.processInfo.environment["MS_DATA_DIR"] ?? nativeDataDir()
     let memorySecrets = ProcessInfo.processInfo.environment["MS_TEST_MEMORY_SECRETS"] != nil
+    /// 测试模式下导入和 core 共用同一份内存密钥
+    private let memoryStore = MemorySecrets()
     let appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "1.0.0"
 
     // 导航
@@ -110,11 +112,16 @@ final class AppModel {
     /// 开发自检：历史项目的时间筛选（today / week / date:2026-10-09 / picker）
     var devTimeFilter: String?
 
+    /// 关窗时还有任务、软件留在了后台（窗口重新打开时清掉）。最小化、⌘H 隐藏都不算。
+    var keptInBackground = false
+
     /// 窗口已经关掉、活也干完了，就退出（关窗时有任务在跑才会留在后台）。
     func quitIfIdleInBackground() {
+        guard keptInBackground else { return }
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 3_000_000_000)
-            guard !hasBackgroundWork, !NSApp.windows.contains(where: { $0.isVisible && $0.canBecomeMain }) else { return }
+            let hasWindow = NSApp.windows.contains { $0.canBecomeMain && ($0.isVisible || $0.isMiniaturized) }
+            guard keptInBackground, !hasBackgroundWork, !hasWindow else { return }
             NSApp.terminate(nil)
         }
     }
@@ -142,7 +149,7 @@ final class AppModel {
     func finishMigrationChoice(importData: Bool) async {
         if importData {
             do {
-                let secrets: SecretStore = memorySecrets ? MemorySecrets() : LocalSecrets.open(dataDir: dataDir)
+                let secrets: SecretStore = memorySecrets ? memoryStore : LocalSecrets.open(dataDir: dataDir)
                 migrationSummary = try await ElectronMigration.migrate(to: dataDir, secrets: secrets, readSecrets: !memorySecrets)
             } catch {
                 alert = AlertItem(title: "导入失败", message: messageOf(error))
@@ -156,7 +163,7 @@ final class AppModel {
     func launchCore() async {
         phase = .starting
         do {
-            let core = try await StudioCore(dataDir: dataDir, secrets: memorySecrets ? MemorySecrets() : nil, appVersion: appVersion, onEvent: { [weak self] event in
+            let core = try await StudioCore(dataDir: dataDir, secrets: memorySecrets ? memoryStore : nil, appVersion: appVersion, onEvent: { [weak self] event in
                 Task { @MainActor in self?.handle(event) }
             })
             self.core = core
@@ -175,22 +182,37 @@ final class AppModel {
     /// 导入 Electron 旧版数据后重建核心（核心会缓存设置和记录）。
     func importFromElectron() async {
         guard let core else { return }
-        if !core.pipeline.runningProjects().isEmpty {
-            alert = AlertItem(title: "有项目正在运行", message: "先停止所有项目再导入。")
+        if hasBackgroundWork || !core.pipeline.runningProjects().isEmpty {
+            alert = AlertItem(title: "有任务正在运行", message: "等项目、批量队列和 PDF 导出都结束（或先停止）后再导入。")
             return
         }
         do {
-            migrationSummary = try await ElectronMigration.migrate(to: dataDir, secrets: core.secrets, readSecrets: !memorySecrets)
-            self.core = nil
-            await launchCore()
-            let summary = migrationSummary ?? .emptyObject
+            let summary = try await ElectronMigration.migrate(to: dataDir, secrets: core.secrets, readSecrets: !memorySecrets)
             let failed = summary["secretsFailed"].items.count
-            alert = AlertItem(
-                title: "已从 Electron 旧版导入",
-                message: "生图线路 \(summary["providers"]?.int ?? 0) 条、大模型厂商 \(summary["vendors"]?.int ?? 0) 个、项目 \(summary["projects"]?.int ?? 0) 个、密钥 \(summary["secrets"]?.int ?? 0) 个。\(failed > 0 ? "\n有 \(failed) 个密钥没能解开，请在「模型与线路」里重新填写。" : "")\nElectron 旧版的数据没有改动。"
-            )
+            let info = NSAlert()
+            info.messageText = "已从 Electron 旧版导入"
+            info.informativeText = "生图线路 \(summary["providers"]?.int ?? 0) 条、大模型厂商 \(summary["vendors"]?.int ?? 0) 个、项目 \(summary["projects"]?.int ?? 0) 个、密钥 \(summary["secrets"]?.int ?? 0) 个。\(failed > 0 ? "\n有 \(failed) 个密钥没能解开，请在「模型与线路」里重新填写。" : "")\nElectron 旧版的数据没有改动。\n\n软件会重新打开，让导入的数据生效。"
+            info.addButton(withTitle: "重新打开")
+            info.runModal()
+            relaunch()
         } catch {
             alert = AlertItem(title: "导入失败", message: messageOf(error))
+        }
+    }
+
+    /// 退出并重新打开自己（导入数据后用：同一个进程里不能有两套后台任务同时读写数据）。
+    func relaunch() {
+        let script = Path.join(NSTemporaryDirectory(), "manual-studio-relaunch-\(randomHex(4)).sh")
+        let env = ProcessInfo.processInfo.environment.filter { ["MS_DATA_DIR", "MS_TEST_MEMORY_SECRETS", "MS_DEV_CONTROL"].contains($0.key) }
+        do {
+            try FS.write(script, Updater.relaunchScript(pid: ProcessInfo.processInfo.processIdentifier, target: Bundle.main.bundlePath, relaunchEnv: env))
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/sh")
+            process.arguments = [script]
+            try process.run()
+            NSApp.terminate(nil)
+        } catch {
+            alert = AlertItem(title: "请手动重新打开软件", message: messageOf(error))
         }
     }
 
@@ -302,6 +324,7 @@ final class AppModel {
                 pdfJob = PdfJob(index: event["index"]?.int ?? 0, total: event["total"]?.int ?? 0, current: current)
             } else {
                 pdfJob = nil
+                quitIfIdleInBackground()
             }
         default:
             break

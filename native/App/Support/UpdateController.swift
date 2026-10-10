@@ -157,8 +157,10 @@ struct UpdateSheet: View {
             Text("更新时软件会自动退出、替换并重新打开；项目和设置都不受影响。").font(.callout).foregroundStyle(.secondary)
             HStack {
                 Button("跳过这个版本") { updater.skip() }
+                    .disabled(updater.phase == .downloading)
                 Spacer()
                 Button("以后再说") { updater.later() }.keyboardShortcut(.cancelAction)
+                    .disabled(updater.phase == .downloading)
                 Button {
                     Task { await updater.install(model: model) }
                 } label: {
@@ -175,6 +177,7 @@ struct UpdateSheet: View {
         }
         .padding(22)
         .frame(width: 520)
+        .interactiveDismissDisabled(updater.phase == .downloading)
     }
 
     var notes: AttributedString {

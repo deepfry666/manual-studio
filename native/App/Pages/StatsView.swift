@@ -67,8 +67,21 @@ struct StatsView: View {
         .fixedSize()
     }
 
+    @State private var loadedDays: Int?
+    @State private var loadedAt = Date.distantPast
+
     func load() async {
+        // 生成过程中调用记录一直在变：离上次刷新不到 5 秒就等到满 5 秒（新事件会取消重来，但等待只会越来越短）；换时间范围立即刷新
+        if stats != nil, loadedDays == days {
+            let wait = 5 - Date().timeIntervalSince(loadedAt)
+            if wait > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+                if Task.isCancelled { return }
+            }
+        }
         stats = try? await model.core?.usageStats(days: days == 0 ? nil : days)
+        loadedDays = days
+        loadedAt = Date()
     }
 
     func percent(_ value: Double?) -> String { value.map { "\(Int(jsRound($0 * 100)))%" } ?? "—" }
@@ -188,11 +201,15 @@ struct Heatmap: View {
         return Color.accentColor.opacity(0.2 + Double(level) * 0.2)
     }
 
-    func tooltip(_ day: Day) -> String {
+    private static let dayFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "M月d日 EEE"
         formatter.locale = Locale(identifier: "zh_CN")
-        return "\(formatter.string(from: day.date))：截图 \(count(daily, day.key, "images")) 张 · 完成项目 \(count(daily, day.key, "completed")) 个 · 新建 \(count(daily, day.key, "created")) 个 · 大模型 \(count(daily, day.key, "llm")) 次"
+        return formatter
+    }()
+
+    func tooltip(_ day: Day) -> String {
+        return "\(Self.dayFormatter.string(from: day.date))：截图 \(count(daily, day.key, "images")) 张 · 完成项目 \(count(daily, day.key, "completed")) 个 · 新建 \(count(daily, day.key, "created")) 个 · 大模型 \(count(daily, day.key, "llm")) 次"
     }
 }
 

@@ -72,7 +72,8 @@ public actor FileSecrets: SecretStore {
         return (try? cipher.decrypt(entry)) ?? ""
     }
 
-    public func has(_ id: String) -> Bool { load()[id] != nil }
+    /// 能解开才算有（密文损坏或密钥不对时界面显示「没有密钥」，而不是有却用不了）
+    public func has(_ id: String) -> Bool { !get(id).isEmpty }
 
     public func set(_ id: String, _ value: String) throws {
         var store = load()
@@ -176,13 +177,16 @@ public final class LocalKeyCipher: SecretCipher, @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         if let key { return key }
-        if let data = try? FS.read(keyFile), data.count == 32 {
+        if FS.exists(keyFile) {
+            // 已有的密钥文件读不了或长度不对：报错，绝不覆盖（覆盖会让已保存的密钥全部作废）
+            guard let data = try? FS.read(keyFile), data.count == 32 else { throw StudioError("本机密钥文件 \(keyFile) 读不了或已损坏，已保存的密钥暂时无法使用") }
             key = SymmetricKey(data: data)
             return key!
         }
         let fresh = SymmetricKey(size: .bits256)
         try FS.mkdirp(Path.dirname(keyFile))
-        let created = FileManager.default.createFile(atPath: keyFile, contents: fresh.withUnsafeBytes { Data($0) }, attributes: [.posixPermissions: 0o600])
+        let created = FileManager.default.createFile(atPath: keyFile + ".tmp", contents: fresh.withUnsafeBytes { Data($0) }, attributes: [.posixPermissions: 0o600])
+            && (try? FileManager.default.moveItem(atPath: keyFile + ".tmp", toPath: keyFile)) != nil
         guard created else { throw StudioError("无法保存本机密钥文件") }
         key = fresh
         return fresh

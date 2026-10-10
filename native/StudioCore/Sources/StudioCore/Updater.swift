@@ -78,6 +78,13 @@ public enum Updater {
     }
 
     /// 替换脚本：等当前进程退出 → 旧 App 挪开 → 新 App 放进去 → 打开新 App；失败时放回旧的。
+    /// 等当前进程退出后重新打开 App（不替换）。
+    public static func relaunchScript(pid: Int32, target: String, relaunchEnv: [String: String] = [:]) -> String {
+        func quote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+        let envArgs = relaunchEnv.sorted { $0.key < $1.key }.map { "--env \(quote("\($0.key)=\($0.value)")) " }.joined()
+        return "#!/bin/sh\nwhile kill -0 \(pid) 2>/dev/null; do sleep 0.3; done\nopen \(envArgs)\(quote(target))\n"
+    }
+
     /// relaunchEnv：重新打开时带上的环境变量（开发自检时把软件数据目录指到临时位置，正常使用为空）。
     public static func installScript(pid: Int32, newApp: String, target: String, relaunchEnv: [String: String] = [:]) -> String {
         func quote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }

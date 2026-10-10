@@ -424,9 +424,16 @@ public final class StudioCore: @unchecked Sendable {
         if deleteFolder, FS.exists(dir) {
             let settings = try await settingsStore.get()
             let target = Path.resolve(dir)
-            // 防止误删工作区、主目录这类上层文件夹
-            let protected = [settings.workspaceDir, NSHomeDirectory(), Path.join(NSHomeDirectory(), "Desktop"), "/"].map(Path.resolve)
-            if protected.contains(target) || Path.basename(target).isEmpty { throw StudioError("不能删除这个文件夹：\(dir)") }
+            // 只读项目（比如 skill 自带的示例）的文件夹不是这个软件的，不删
+            if (try? projectStore.read(dir))??["readOnly"].isTruthy == true { throw StudioError("只读项目的文件夹不能删除，只能从列表移除") }
+            // 防止误删工作区、主目录这类上层文件夹，以及不像项目的文件夹
+            let protected = [settings.workspaceDir, NSHomeDirectory(), Path.join(NSHomeDirectory(), "Desktop"), Path.join(NSHomeDirectory(), "Documents"), Path.join(NSHomeDirectory(), "Downloads"), "/"].map(Path.resolve)
+            let markers = ["content.json", "screen-plan.json", "project-manifest.json", "generation-record.json", "screens"]
+            // 工作区里直接的子文件夹（包括刚建、还空着的）可以删；工作区以外的必须看得出是项目文件夹
+            let insideWorkspace = Path.dirname(target) == Path.resolve(settings.workspaceDir)
+            if protected.contains(target) || Path.basename(target).isEmpty || !(insideWorkspace || markers.contains(where: { FS.exists(Path.join(target, $0)) })) {
+                throw StudioError("这个文件夹看起来不是项目文件夹，没有删除：\(dir)")
+            }
             try trashItem(target)
         }
         for item in batch.list().items where item["projectDir"]?.string == dir {

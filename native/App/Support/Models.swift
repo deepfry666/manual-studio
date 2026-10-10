@@ -60,6 +60,18 @@ let TXT_LABELS: [(key: String, label: String)] = [
 /// 历史项目列表的一行。
 struct ProjectRow: Identifiable, Hashable {
     let json: JSON
+    /// 新建、生成、完成、最近改动的时间（列表按日期筛选用，载入时解析一次）。导入的项目不算导入那天。
+    let activityDates: [Date]
+
+    init(json: JSON) {
+        self.json = json
+        let imported = json["origin"]?.string == "imported"
+        let added = parseISO(json["addedAt"]?.string)
+        var stamps = [parseISO(json["lastBuildAt"]?.string), parseISO(json["timing"]?["completedAt"]?.string)]
+        if !imported { stamps.append(added) }
+        if let updated = parseISO(json["updatedAt"]?.string), !imported || updated - (added ?? 0) > 10 * 60_000 { stamps.append(updated) }
+        activityDates = stamps.compactMap { $0 }.map { Date(timeIntervalSince1970: $0 / 1000) }
+    }
     var id: String { dir }
     var dir: String { json["dir"]?.string ?? "" }
     var name: String { json["name"]?.jsString ?? Path.basename(dir) }

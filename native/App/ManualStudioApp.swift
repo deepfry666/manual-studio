@@ -19,6 +19,8 @@ struct ManualStudioApp: App {
                     UpdateSheet(updater: updater).environment(model)
                 }
                 .task {
+                    // 窗口（重新）打开了，就不再是「留在后台」
+                    model.keptInBackground = false
                     delegate.model = model
                     await model.start()
                     updater.checkOnLaunch()
@@ -55,6 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 关窗：没有任务就退出；有任务在跑就留在后台继续跑，点程序坞图标重新打开窗口，跑完自动退出。
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         guard let model, model.hasBackgroundWork else { return true }
+        model.keptInBackground = true
         model.notify("窗口已关闭，任务在后台继续运行；点程序坞里的图标可以重新打开，全部跑完后自动退出。")
         return false
     }

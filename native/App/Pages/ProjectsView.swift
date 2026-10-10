@@ -62,13 +62,7 @@ struct ProjectsView: View {
 
     func matchesTime(_ project: ProjectRow) -> Bool {
         guard timeFilter != "all" else { return true }
-        // 导入的历史项目不按导入那天算：只看导入后的生成、完成和改动（导入时那几条日志不算）
-        let imported = project.origin == "imported"
-        let added = parseISO(project.addedAt)
-        var stamps = [project.lastBuildAt ?? "", project.json["timing"]?["completedAt"]?.string ?? ""]
-        if !imported { stamps.append(project.addedAt) }
-        if let updated = parseISO(project.updatedAt), !imported || updated - (added ?? 0) > 10 * 60_000 { stamps.append(project.updatedAt) }
-        let times = stamps.compactMap { parseISO($0) }.map { Date(timeIntervalSince1970: $0 / 1000) }
+        let times = project.activityDates
         let calendar = Calendar.current
         switch timeFilter {
         case "today": return times.contains { calendar.isDateInToday($0) }
@@ -99,6 +93,10 @@ struct ProjectsView: View {
         }
         .navigationTitle("历史项目")
         .onChange(of: model.devSelection) { _, next in if let next { selection = next } }
+        .onChange(of: batches.map(\.id)) { _, ids in
+            // 选中的那一批已经不存在（项目都移除了），退回全部，免得列表莫名其妙是空的
+            if batchFilter != "all", !ids.contains(batchFilter) { batchFilter = "all" }
+        }
         .onChange(of: model.devTimeFilter) { _, next in
             guard let value = next?.components(separatedBy: "#").first else { return }
             if value == "picker" { datePickerOpen = true }

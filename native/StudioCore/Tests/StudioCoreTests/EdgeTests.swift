@@ -325,6 +325,13 @@ struct EdgeTests {
         #expect(!left.contains(keep) && !left.contains(drop))
         await #expect(throws: StudioError.self) { try await ctx.core.removeFromList(ctx.workspace, deleteFolder: true) }
         #expect(FS.exists(ctx.workspace))
+
+        // 工作区以外、看不出是项目的文件夹不删；只读项目的文件夹不删
+        let outside = Path.join(ctx.root, "外面的文件夹")
+        try FS.mkdirp(outside)
+        try FS.write(Path.join(outside, "notes.txt"), "x")
+        await #expect(throws: StudioError.self) { try await ctx.core.removeFromList(outside, deleteFolder: true) }
+        #expect(FS.exists(outside))
     }
 
     @Test("批次：批量新建记下批次；以前的按 1 秒内连续新建推断；导入的不分批")
