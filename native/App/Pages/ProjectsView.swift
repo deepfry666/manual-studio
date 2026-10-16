@@ -25,6 +25,20 @@ struct ProjectsView: View {
     @State private var removeTargets: [ProjectRow]?
     @State private var codeTemplateTargets: [String]?
     @State private var applyingCodeTemplate = false
+    /// 用勾选框勾过：之后单击行也是「加选 / 取消」，不会把已勾选的清掉
+    @State private var checkMode = false
+    /// 最近一次单击的行和单击前的选择：双击打开时恢复选择，只打开双击的那一行
+    @State private var lastClicked: String?
+    @State private var beforeClick: Set<String>?
+    @State private var handledClick: TimeInterval = 0
+    @State private var startPlan: StartPlan?
+
+    /// 开始处理前的清单：哪些会开始，哪些跳过、为什么
+    struct StartPlan: Identifiable {
+        let id = UUID()
+        let dirs: [String]
+        let skipped: [String]
+    }
 
     struct ExportRequest: Identifiable {
         let id = UUID()
@@ -97,7 +111,14 @@ struct ProjectsView: View {
             table
         }
         .navigationTitle("历史项目")
-        .onChange(of: model.devSelection) { _, next in if let next { selection = next } }
+        .onChange(of: model.devSelection) { _, next in if let next { selection = next; checkMode = next.count > 1 } }
+        // 搜索、筛选后看不见的项目不再算选中，批量操作只作用于列表里看得到的（和访达一样）
+        .onChange(of: selection.isEmpty) { _, empty in if empty { checkMode = false } }
+        .onChange(of: rows.map(\.dir)) { _, visible in
+            let shown = Set(visible)
+            if !selection.isSubset(of: shown) { selection.formIntersection(shown) }
+            if selection.isEmpty { checkMode = false }
+        }
         .onChange(of: batches.map(\.id)) { _, ids in
             // 选中的那一批已经不存在（项目都移除了），退回全部，免得列表莫名其妙是空的
             if batchFilter != "all", !ids.contains(batchFilter) { batchFilter = "all" }
@@ -112,7 +133,7 @@ struct ProjectsView: View {
         .searchable(text: $query, placement: .toolbar, prompt: "按软件名搜索")
         .toolbar { toolbar }
         .sheet(item: $exportDirs) { request in
-            ExportSheet(dirs: request.dirs) { selection = [] }
+            ExportSheet(dirs: request.dirs) { clearSelection() }
         }
         .confirmationDialog(pdfTargets.map { "重新导出 \($0.count) 个项目的 PDF？" } ?? "", isPresented: Binding(get: { pdfTargets != nil }, set: { if !$0 { pdfTargets = nil } }), titleVisibility: .visible) {
             Button("开始") { startPdfReexport(pdfTargets ?? []) }
@@ -128,11 +149,16 @@ struct ProjectsView: View {
             Button("只从列表移除") { remove(removeTargets ?? [], deleteFolder: false) }
             Button("移除并把文件夹移到废纸篓", role: .destructive) { remove(removeTargets ?? [], deleteFolder: true) }
         } message: {
-            Text("只从列表移除：项目文件夹留在原处，以后可以在「设置 → 导入历史项目」里重新导入。\n移到废纸篓：项目文件夹（截图、文档、交付包）一起移到废纸篓，清空废纸篓前都可以恢复。")
+            Text("\((removeTargets?.count ?? 0) > 1 ? "\(nameList(removeTargets ?? []))\n\n" : "")只从列表移除：项目文件夹留在原处，以后可以在「设置 → 导入历史项目」里重新导入。\n移到废纸篓：项目文件夹（截图、文档、交付包）一起移到废纸篓，清空废纸篓前都可以恢复。")
+        }
+        .confirmationDialog(startPlan.map { "开始处理 \($0.dirs.count) 个项目？" } ?? "", isPresented: Binding(get: { startPlan != nil }, set: { if !$0 { startPlan = nil } }), titleVisibility: .visible) {
+            Button("开始处理 \(startPlan?.dirs.count ?? 0) 个") { if let plan = startPlan { enqueue(plan.dirs) } }
+        } message: {
+            Text("跳过 \(startPlan?.skipped.count ?? 0) 个：\n\(startPlan?.skipped.joined(separator: "\n") ?? "")")
         }
     }
 
-    var hasTopContent: Bool { applyingCodeTemplate || model.pdfJob != nil || !model.batchItems.isEmpty || setupMissing }
+    var hasTopContent: Bool { applyingCodeTemplate || model.pdfJob != nil || QueueBar.visible(model) || setupMissing }
     var setupMissing: Bool { SetupHint.missing(model).isEmpty == false }
 
     var subtitle: String {
@@ -145,12 +171,15 @@ struct ProjectsView: View {
     // MARK: 表格
 
     var table: some View {
-        Table(rows, selection: $selection) {
-            // 勾选框：不用按住 ⌘ 也能多选（点行本身仍是单选）
+        Table(rows, selection: Binding(get: { selection }, set: { tableSelectionChanged($0) })) {
+            // 勾选框：不用按住 ⌘ 也能多选；勾过之后单击行也是加选 / 取消
             TableColumn("") { row in
                 Toggle("", isOn: Binding(
                     get: { selection.contains(row.dir) },
-                    set: { checked in if checked { selection.insert(row.dir) } else { selection.remove(row.dir) } }
+                    set: { checked in
+                        if checked { selection.insert(row.dir); checkMode = true } else { selection.remove(row.dir) }
+                        if selection.isEmpty { checkMode = false }
+                    }
                 ))
                 .toggleStyle(.checkbox)
                 .labelsHidden()
@@ -208,7 +237,18 @@ struct ProjectsView: View {
         .contextMenu(forSelectionType: String.self) { ids in
             contextMenu(ids)
         } primaryAction: { ids in
-            if let dir = ids.first { model.openProject(dir) }
+            // 双击（或回车）只打开双击的那一行；多选时第一下单击带来的加选 / 取消要撤回
+            if let clicked = lastClicked, ids.contains(clicked) || beforeClick?.contains(clicked) == true {
+                if let before = beforeClick, before.count > 1 || checkMode { selection = before }
+                model.openProject(clicked)
+            } else if ids.count == 1, let dir = ids.first {
+                model.openProject(dir)
+            }
+        }
+        .onDeleteCommand { askRemove(selectedRows) }
+        .onExitCommand { clearSelection() }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if !selection.isEmpty { selectionBar }
         }
         .overlay {
             if model.projectsLoaded && model.projects.isEmpty {
@@ -270,24 +310,137 @@ struct ProjectsView: View {
             Button("在访达中显示") { model.reveal(row.dir) }
             Divider()
         }
-        if let batchId = targets.first?.batchId {
-            let members = model.projects.filter { $0.batchId == batchId }
-            Button("选中同一批（\(members.count) 个，\(targets[0].batchLabel)）") { selection = Set(members.map(\.dir)) }
-            Divider()
+        actionItems(targets)
+    }
+
+    /// 右键菜单和底部操作栏「更多」共用同一份操作，内容一致
+    @ViewBuilder
+    func actionItems(_ targets: [ProjectRow], primary: Bool = true) -> some View {
+        if primary {
+            Button("开始处理") { start(targets) }
+            Button("导出…") { exportDirs = ExportRequest(dirs: targets.map(\.dir)) }
         }
-        Button("开始处理") { start(targets) }
-        Button("导出…") { exportDirs = ExportRequest(dirs: targets.map(\.dir)) }
         Button("重新导出 PDF") { askPdf(targets) }
         Button("批量应用当前代码模板…") { askCodeTemplate(targets) }
             .disabled(applyingCodeTemplate || model.pdfJob != nil)
         if targets.contains(where: \.pdfFontProblem) {
             Button("忽略字体提示") { ignoreFonts(targets) }
         }
-        if targets.count == 1, let row = targets.first {
-            Divider()
-            Button("从列表移除…") { removeTargets = [row] }
-                .disabled(row.status == "running")
+        if targets.contains(where: { $0.queue != nil && $0.queue?["status"]?.string != "running" }) {
+            Button("移出队列") {
+                Task {
+                    await model.core?.batchRemoveProjects(targets.map(\.dir))
+                    model.toast(.success, "已移出队列")
+                }
+            }
         }
+        if let batchId = targets.first?.batchId {
+            let members = model.projects.filter { $0.batchId == batchId }
+            Divider()
+            Button("选中同一批（\(members.count) 个，\(targets[0].batchLabel)）") {
+                selection = Set(members.map(\.dir))
+                checkMode = true
+            }
+        }
+        Divider()
+        Button("从列表移除…") { askRemove(targets) }
+            .disabled(targets.allSatisfy { $0.status == "running" })
+    }
+
+    /// 选中项目后出现在底部：带文字的批量操作，和右键菜单内容一致
+    var selectionBar: some View {
+        let targets = selectedRows
+        let count = targets.count
+        return HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("已选 \(count) 个").fontWeight(.semibold).monospacedDigit()
+                if checkMode || count > 1 {
+                    Text("单击行加选或取消，双击打开").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Spacer(minLength: 12)
+            Button("开始处理（\(count)）", systemImage: "play.fill") { start(targets) }
+                .buttonStyle(.glassProminent)
+            Button("导出（\(count)）…", systemImage: "square.and.arrow.up") { exportDirs = ExportRequest(dirs: targets.map(\.dir)) }
+                .buttonStyle(.glass)
+            Menu {
+                actionItems(targets, primary: false)
+            } label: {
+                Label("更多", systemImage: "ellipsis")
+            }
+            .menuStyle(.button)
+            .buttonStyle(.glass)
+            .fixedSize()
+            Divider().frame(height: 20)
+            Button("全选当前列表（\(rows.count)）") {
+                selection = Set(rows.map(\.dir))
+                checkMode = true
+            }
+            .buttonStyle(.borderless)
+            .disabled(selection == Set(rows.map(\.dir)))
+            Button("取消选择", systemImage: "xmark.circle.fill") { clearSelection() }
+                .buttonStyle(.borderless)
+                .labelStyle(.iconOnly)
+                .help("取消选择（Esc）")
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+        .background(.bar)
+        .overlay(alignment: .top) { Divider() }
+    }
+
+    /// 表格里的点选。已经在多选（勾选过，或选了不止一个）时，不按修饰键的单击是「加选 / 取消」这一行，
+    /// 和勾选框一致，不会把已勾选的清掉；只选了一个或没选时，单击仍是只选这一行（和访达一样）。
+    /// ⌘ 点选、⇧ 连选、键盘上下键保持系统行为。
+    /// 系统表格在多选时单击已选中的行会报告「什么都没选」，所以点的是哪一行按鼠标位置自己算。
+    func tableSelectionChanged(_ next: Set<String>) {
+        let previous = selection
+        let event = NSApp.currentEvent
+        let plainClick = event.map { [.leftMouseDown, .leftMouseUp].contains($0.type) && $0.modifierFlags.intersection([.command, .shift]).isEmpty } ?? false
+        if plainClick, checkMode || previous.count > 1, let event, let clicked = clickedRow(event) ?? (next.count == 1 ? next.first : nil) {
+            // 同一次点击可能回调多次，只处理一次
+            if handledClick == event.timestamp { return }
+            handledClick = event.timestamp
+            beforeClick = previous
+            lastClicked = clicked
+            selection = previous.contains(clicked) ? previous.subtracting([clicked]) : previous.union([clicked])
+        } else {
+            beforeClick = previous
+            lastClicked = next.subtracting(previous).first ?? (next.count == 1 ? next.first : nil)
+            selection = next
+        }
+        if selection.isEmpty { checkMode = false }
+    }
+
+    /// 鼠标点在表格的哪一行（按当前列表顺序）
+    func clickedRow(_ event: NSEvent) -> String? {
+        guard let content = event.window?.contentView, let hit = content.hitTest(event.locationInWindow) else { return nil }
+        var view: NSView? = hit
+        while let current = view, !(current is NSTableView) { view = current.superview }
+        guard let table = view as? NSTableView else { return nil }
+        let index = table.row(at: table.convert(event.locationInWindow, from: nil))
+        let list = rows
+        return list.indices.contains(index) ? list[index].dir : nil
+    }
+
+    func clearSelection() {
+        selection = []
+        checkMode = false
+    }
+
+    func askRemove(_ targets: [ProjectRow]) {
+        let removable = targets.filter { $0.status != "running" }
+        if removable.isEmpty {
+            if !targets.isEmpty { model.toast(.info, "选中的项目都在运行，先停止再移除") }
+            return
+        }
+        removeTargets = removable
+    }
+
+    /// 确认框里列出项目名，最多 8 个
+    func nameList(_ targets: [ProjectRow]) -> String {
+        let names = targets.prefix(8).map { "· \($0.name)" }
+        return (names + (targets.count > 8 ? ["… 等 \(targets.count) 个"] : [])).joined(separator: "\n")
     }
 
     // MARK: 工具栏
@@ -353,40 +506,12 @@ struct ProjectsView: View {
                 .help("导出全部已完成")
             }
             ToolbarItem(placement: .primaryAction) {
-                Button { selection = Set(rows.map(\.dir)) } label: { Label("全选", systemImage: "checkmark.circle") }
-                    .help("全选当前列表")
+                Button {
+                    selection = Set(rows.map(\.dir))
+                    checkMode = true
+                } label: { Label("全选", systemImage: "checkmark.circle") }
+                    .help("全选当前列表（⌘A）")
                     .disabled(rows.isEmpty)
-            }
-        } else {
-            ToolbarItemGroup(placement: .primaryAction) {
-                Text("已选 \(selection.count) 个").foregroundStyle(.secondary)
-                Button { start(selectedRows) } label: { Label("开始处理", systemImage: "play.fill") }
-                    .help("开始处理")
-                Button { exportDirs = ExportRequest(dirs: Array(selection)) } label: { Label("导出…", systemImage: "square.and.arrow.up") }
-                    .help("导出…")
-                Menu {
-                    Button("重新导出 PDF") { askPdf(selectedRows) }
-                    Button("批量应用当前代码模板…") { askCodeTemplate(selectedRows) }
-                        .disabled(applyingCodeTemplate || model.pdfJob != nil)
-                    if selectedRows.contains(where: \.pdfFontProblem) {
-                        Button("忽略字体提示") { ignoreFonts(selectedRows) }
-                    }
-                    if selectedRows.contains(where: { $0.queue != nil && $0.queue?["status"]?.string != "running" }) {
-                        Button("移出队列") {
-                            Task {
-                                await model.core?.batchRemoveProjects(Array(selection))
-                                model.toast(.success, "已移出队列")
-                            }
-                        }
-                    }
-                    Button("从列表移除…") { removeTargets = selectedRows.filter { $0.status != "running" } }
-                        .disabled(selectedRows.allSatisfy { $0.status == "running" })
-                    Divider()
-                    Button("全选当前列表") { selection = Set(rows.map(\.dir)) }
-                    Button("取消选择") { selection = [] }
-                } label: {
-                    Label("更多", systemImage: "ellipsis")
-                }
             }
         }
     }
@@ -394,21 +519,37 @@ struct ProjectsView: View {
     // MARK: 操作
 
     func start(_ targets: [ProjectRow]) {
-        let dirs = targets.filter { !$0.readOnly && $0.status != "running" }.map(\.dir)
+        var dirs: [String] = []
+        var skipped: [String] = []
+        for row in targets {
+            if row.readOnly { skipped.append("· \(row.name)（只读的历史项目）") }
+            else if row.status == "running" { skipped.append("· \(row.name)（正在运行）") }
+            else if row.queue?["status"]?.string == "queued" { skipped.append("· \(row.name)（已经在排队）") }
+            else { dirs.append(row.dir) }
+        }
         guard !dirs.isEmpty else {
-            model.toast(.info, "选中的项目都在运行或是只读的")
+            model.toast(.info, "选中的项目都在运行、排队或是只读的")
             return
         }
+        // 全部能开始就直接开始；有要跳过的先说清楚
+        if skipped.isEmpty { enqueue(dirs) } else { startPlan = StartPlan(dirs: dirs, skipped: Array(skipped.prefix(10)) + (skipped.count > 10 ? ["… 等 \(skipped.count) 个"] : [])) }
+    }
+
+    func enqueue(_ dirs: [String]) {
+        startPlan = nil
         Task {
             await model.core?.batch.enqueue(dirs)
             model.toast(.success, "已开始：\(dirs.count) 个项目，同时处理 \(concurrencyText(model.settings.pipeline.batchConcurrency))")
-            selection = []
+            clearSelection()
         }
     }
 
     func askPdf(_ targets: [ProjectRow]) {
         let dirs = targets.filter { $0.hasBundle && $0.status != "running" }.map(\.dir)
-        if dirs.isEmpty { model.toast(.info, "选中的项目没有交付包，或者正在运行") } else { pdfTargets = dirs }
+        if dirs.isEmpty { model.toast(.info, "选中的项目没有交付包，或者正在运行") } else {
+            if dirs.count < targets.count { model.toast(.info, "跳过 \(targets.count - dirs.count) 个没有交付包或正在运行的项目") }
+            pdfTargets = dirs
+        }
     }
 
     func askCodeTemplate(_ targets: [ProjectRow]) {
@@ -441,7 +582,7 @@ struct ProjectsView: View {
     }
 
     func startPdfReexport(_ dirs: [String]) {
-        selection = []
+        clearSelection()
         guard let core = model.core else { return }
         Task {
             let result = await core.reexportPdfs(dirs)
@@ -494,9 +635,14 @@ struct ProgressCell: View {
 struct QueueBar: View {
     @Environment(AppModel.self) private var model
 
+    /// 空闲时（没有运行、排队、暂停或需要处理的）不占位置
+    static func visible(_ model: AppModel) -> Bool {
+        model.batchPaused || model.batchItems.contains { ["running", "queued", "paused", "failed", "needs-attention"].contains($0["status"]?.string ?? "") }
+    }
+
     var body: some View {
         let items = model.batchItems
-        if !items.isEmpty {
+        if QueueBar.visible(model) {
             let counts = Dictionary(grouping: items, by: { $0["status"]?.string ?? "" }).mapValues(\.count)
             let unfinished = (counts["running"] ?? 0) + (counts["queued"] ?? 0) + (counts["paused"] ?? 0)
             let attention = (counts["failed"] ?? 0) + (counts["needs-attention"] ?? 0)
