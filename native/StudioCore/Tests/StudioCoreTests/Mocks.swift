@@ -216,10 +216,10 @@ final class MockLlm: MockHost, @unchecked Sendable {
                 "inventory": .string("界面标题为「\(title)」，上方是本月支出 ¥3,280 的汇总卡片，下面列出餐饮 ¥1,120、交通 ¥360 等分类，底部有蓝色主按钮。"),
                 "warnings": [],
             ])
-        } else if system.contains("多条修改意见整理成具体的修改动作") {
+        } else if system.contains("修改意见整理成") {
             calls.withLock { $0.append(Call(step: "feedback", model: model, user: user)) }
             // 简单规则模拟大模型：图N + 说明/文字 → 改说明；图N → 改图；封面 → 封面介绍；整体 → 所有图；其他 → 提问
-            let items = Rx.matches("意见([0-9]+)：(.+)", user).map { (Int($0[1]!)!, $0[2]!) }
+            let items = Rx.matches("意见([0-9]+)(?:（[^）]*）)?：(.+)", user).map { (Int($0[1]!)!, $0[2]!) }
             var merged: [(String, JSON)] = []
             var questions: [JSON] = []
             for (index, text) in items {
@@ -265,7 +265,7 @@ final class MockLlm: MockHost, @unchecked Sendable {
             }
             result = .obj(["sections": .array(["软件基本处理流程", "程序系统组织结构", "功能模块划分", "接口设计", "数据结构设计"].map(section))])
         } else {
-            calls.withLock { $0.append(Call(step: "other")) }
+            calls.withLock { $0.append(Call(step: "other", user: user, body: body)) }
             result = ["ok": true]
         }
         return jsonResponse(200, ["choices": [["message": ["role": "assistant", "content": .string(result.serialized())]]], "usage": ["prompt_tokens": 10, "completion_tokens": 10]])

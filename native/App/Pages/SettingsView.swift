@@ -142,8 +142,8 @@ struct CodeSourceSettings: View {
                         Button("清除", role: .destructive) { model.saveSettings(["codeSource": .obj(["path": "", "extensions": JSON(source.extensions)])]) }.buttonStyle(.borderless)
                     }
                 }
-                SettingsRow(label: "新代码模板", info: "用户的代码模板：3,322行，其中3,229行非空代码；代码PDF正好60页。") {
-                    Button("使用新模板") { importTemplate(CodeWordTemplate.bundledPath) }
+                SettingsRow(label: "内置代码模板", info: "软件自带的 Java 代码 Word 模板：3,322 行，其中 3,229 行非空代码；代码 PDF 正好 60 页，页眉为软件名和页码。") {
+                    Button("使用内置模板") { importTemplate(CodeWordTemplate.bundledPath) }
                 }
                 SettingsRow(label: "文件类型", vertical: true) {
                     TokenEditor(tokens: Binding(get: { source.extensions }, set: { model.saveSettings(["codeSource": .obj(["path": .string(source.path), "extensions": JSON($0)])]) }), suggestions: CODE_EXTENSIONS)

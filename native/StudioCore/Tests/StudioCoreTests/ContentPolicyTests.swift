@@ -33,7 +33,7 @@ struct ContentPolicyTests {
         #expect(try restored.read(dir)?["request"]?["contentDate"]?.string == "2026-10-15")
         let prompt = try FS.readText(Path.join(dir, "prompts/screen-01.md"))
         #expect(prompt.contains("2026-10-15"))
-        #expect(prompt.contains("不得自行编造更早的经营记录"))
+        #expect(prompt.contains("历史记录最早只能到 2026-09-15"))
         let twice = ensureContentDateRule(ensureContentDateRule(prompt, try #require(try restored.read(dir))), try #require(try restored.read(dir)))
         #expect(twice == prompt)
         let edited = ensureContentDateRule(prompt + "\nRevision applied: 蓝色按钮", try #require(try restored.read(dir)))

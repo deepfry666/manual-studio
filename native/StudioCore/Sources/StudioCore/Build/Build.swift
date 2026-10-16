@@ -32,6 +32,7 @@ func buildManifest(softwareName: String, content: JSON, withPdf: Bool, withCode:
     manifest["codeDocument"] = .string(withCode ? "from-code-source" : "not-generated")
     manifest["createdAt"] = content["createdAt"].or(.string(isoNow().jsSlice(0, 10)))
     if let date = content["contentDate"] { manifest["contentDate"] = date }
+    if let date = content["earliestDate"] { manifest["earliestDate"] = date }
     manifest["builtAt"] = .string(isoNow())
     manifest["guideLayoutVersion"] = 2
     manifest["builtBy"] = "软件指南生成器"

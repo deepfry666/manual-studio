@@ -74,6 +74,9 @@ public func createImportedState(_ dir: String, _ info: JSON) throws -> JSON {
     if let date = [content?["contentDate"].text, manifest?["contentDate"].text].compactMap({ $0 }).first(where: validContentDate) {
         request["contentDate"] = .string(date)
     }
+    if let date = [content?["earliestDate"].text, manifest?["earliestDate"].text].compactMap({ $0 }).first(where: validContentDate) {
+        request["earliestDate"] = .string(date)
+    }
     if let override = content?["compileDateOverride"] {
         request["compileDate"] = override
     } else if let compileDate = content?["compileDate"]?.string, let date = request["contentDate"]?.string, compileDate != contentDateChinese(date) {

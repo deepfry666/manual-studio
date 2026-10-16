@@ -179,8 +179,3 @@ public func contentDateChinese(_ value: String) -> String {
     guard parts.count == 3 else { return chineseDate() }
     return "\(parts[0])年\(parts[1])月\(parts[2])日"
 }
-
-public func contentDateRule(_ state: JSON) -> String {
-    let date = contentDateOf(state)
-    return "\n\n统一日期规定（优先于旧规划、示例数据和旧正文）：本项目内容基准日期为 \(date)（\(contentDateChinese(date))）。截图中的日期、示例记录、订单、报表、日历选中日、正文描述和设计说明默认都使用此日，月份和年份也与此日一致。不得自行编造更早的经营记录、软件上线时间、企业成立时间或多年使用历史；不需要日期的地方不添加日期。确需展示日期范围或预约日期时，以此日为起点合理安排，正文必须与截图实际日期一致。软件名称、版本号保持原样，不当作业务日期改写。"
-}

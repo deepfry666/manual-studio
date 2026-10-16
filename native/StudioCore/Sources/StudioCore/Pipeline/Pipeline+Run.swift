@@ -323,7 +323,7 @@ extension Pipeline {
             record["gate"]?[id] = .obj(["status": .string(passed ? "manual-passed" : "failed"), "method": "manual", "imageSha256": .string(sha), "checkedAt": .string(at)])
             record.append("history", .obj(["at": .string(at), "event": "gate", "screenId": .string(id), "status": .string(passed ? "manual-passed" : "failed"), "method": "manual"]))
         }
-        let tokensHash = hashObject(JSON(forbiddenBrandTokens(softwareName(state), extraTokens(state))))
+        let tokensHash = gateKey(state)
         try await update(dir) { draft in
             let previous = draft["screens"]?[id]?["gate"].or(.emptyObject) ?? .emptyObject
             let checkedAt = isoNow()
@@ -331,6 +331,7 @@ extension Pipeline {
                 ? previous.merging(.obj(["status": "manual-passed", "method": .string(previous["method"]?.string == "vision" ? "vision+manual" : "manual"), "sha": .string(sha), "tokensHash": .string(tokensHash), "checkedAt": .string(checkedAt), "reasons": []]))
                 : previous.merging(.obj(["status": "failed", "method": "manual", "sha": .string(sha), "tokensHash": .string(tokensHash), "checkedAt": .string(checkedAt), "reasons": ["人工判定有软件名或不合格"]]))
             draft.mergeChild("screens", id, .obj(["gate": gate]))
+            if passed { draft["screens"]?[id]?["requestedChange"] = nil }
             appendLog(&draft, "\(id) 人工\(passed ? "确认通过" : "判定不合格")")
             let gateStatus = draft["steps"]?["gate"]?["status"]?.string
             if gateStatus == "review" || gateStatus == "failed" { draft.mergeChild("steps", "gate", ["status": "pending"]) }
@@ -386,6 +387,16 @@ extension Pipeline {
             if !value.isEmpty && !validContentDate(value) { throw StudioError("内容日期请填写有效的 YYYY-MM-DD 日期") }
             patch["contentDate"] = .string(value.isEmpty ? localDateKey() : value)
         }
+        if let date = patch["earliestDate"]?.string {
+            let value = date.jsTrimmed
+            if !value.isEmpty && !validContentDate(value) { throw StudioError("最早日期请填写有效的 YYYY-MM-DD 日期，或留空") }
+            patch["earliestDate"] = .string(value)
+        }
+        let nextContentDate = patch["contentDate"]?.string ?? before["contentDate"]?.string ?? ""
+        let nextEarliest = patch["earliestDate"]?.string ?? before["earliestDate"]?.string ?? ""
+        if validContentDate(nextContentDate), validContentDate(nextEarliest), nextEarliest > nextContentDate {
+            throw StudioError("最早日期（\(nextEarliest)）不能晚于内容日期（\(nextContentDate)）")
+        }
         var next = before.merging(patch)
         // 版本号不用人选：按软件名自动判断（历史项目里单独填适用版本的保持不变）
         if let name = patch["softwareName"], before["versionPolicy"]?.string != "separate-metadata" {
@@ -406,15 +417,15 @@ extension Pipeline {
             }
             ["prompts", "gate", "receipt", "build"].forEach { dirty.insert($0) }
         }
-        if ["screenCount", "emphasis", "notes", "platform", "contentDate"].contains(where: { changed($0) && orNull(patch[$0]) != orNull(before[$0]) }) {
+        if ["screenCount", "emphasis", "notes", "platform", "contentDate", "earliestDate"].contains(where: { changed($0) && orNull(patch[$0]) != orNull(before[$0]) }) {
             ["plan", "prompts", "images", "gate", "content", "receipt", "build"].forEach { dirty.insert($0) }
         }
-        if changed("contentDate") { dirty.insert("design") }
+        if changed("contentDate") || changed("earliestDate") { dirty.insert("design") }
         if changed("wantDesign"), patch["wantDesign"].isTruthy != before["wantDesign"].isTruthy { ["design", "receipt", "build"].forEach { dirty.insert($0) } }
         if ["codeSource", "codeSourceLocked", "txtFields", "compileDate", "versionPolicy", "applicableVersion", "allowDropCodeDoc"].contains(where: changed) { dirty.insert("build") }
         if changed("extraBrandTokens") { ["gate", "receipt", "build"].forEach { dirty.insert($0) } }
         let request = next
-        let refreshContentDate = dirty.contains("plan") && patch["contentDate"] != nil
+        let refreshContentDate = dirty.contains("plan") && (patch["contentDate"] != nil || patch["earliestDate"] != nil)
         try await update(dir) { draft in
             draft["request"] = request
             if refreshContentDate { draft["contentDateNeedsRefresh"] = true }
@@ -494,11 +505,12 @@ extension Pipeline {
 
     // MARK: - 修改意见：先攒清单，再整理，确认后统一修改
 
+    /// target：指定改哪里（screen-XX / all / overview / design），nil 表示让软件判断。
     @discardableResult
-    public func addFeedback(_ dir: String, _ text: String) async throws -> JSON {
+    public func addFeedback(_ dir: String, _ text: String, target: String? = nil) async throws -> JSON {
         let value = text.jsTrimmed
         if value.isEmpty { throw StudioError("修改意见是空的") }
-        let item: JSON = .obj(["id": .string(randomHex(4)), "text": .string(value), "at": .string(isoNow()), "status": "pending"])
+        let item: JSON = .obj(["id": .string(randomHex(4)), "text": .string(value), "at": .string(isoNow()), "status": "pending", "target": JSON.maybe(target.flatMap { $0.isEmpty ? nil : $0 })])
         try await update(dir) { draft in
             draft["feedback"] = .array(draft["feedback"].items + [item])
             draft["feedbackPlan"] = .null
@@ -512,6 +524,18 @@ extension Pipeline {
         try await update(dir) { draft in
             draft["feedback"] = .array(draft["feedback"].items.map { item in
                 item["id"]?.string == id && item["status"]?.string == "pending" ? item.merging(.obj(["text": .string(value)])) : item
+            })
+            draft["feedbackPlan"] = .null
+        }
+    }
+
+    public func setFeedbackTarget(_ dir: String, _ id: String, _ target: String?) async throws {
+        try await update(dir) { draft in
+            draft["feedback"] = .array(draft["feedback"].items.map { item in
+                guard item["id"]?.string == id, item["status"]?.string == "pending" else { return item }
+                var next = item
+                next["target"] = target.flatMap { $0.isEmpty ? nil : JSON.string($0) }
+                return next
             })
             draft["feedbackPlan"] = .null
         }
@@ -534,40 +558,45 @@ extension Pipeline {
         let content = try FS.readJSON(projectPaths(dir).content)
         var contentById: [String: JSON] = [:]
         for (index, screen) in (content?["screens"].items ?? []).enumerated() { contentById[screen["id"].or(.string(screenId(index))).jsString] = screen }
-        let screens: [FeedbackScreen] = plan["screens"].items.enumerated().map { index, screen in
+        let screens: [FeedbackScreenInfo] = plan["screens"].items.enumerated().map { index, screen in
             let id = screen["id"]?.jsString ?? ""
-            return FeedbackScreen(
+            let gate = state["screens"]?[id]?["gate"]
+            let inventory = gate?["inventory"].text ?? ""
+            return FeedbackScreenInfo(
                 figure: "图\(index + 1)",
                 id: id,
                 title: (contentById[id]?["title"].truthyValue ?? screen["title"] ?? .null).jsString,
-                inventory: (state["screens"]?[id]?["gate"]?["inventory"].text ?? "").jsSlice(0, 260),
-                visual: (screen["visualBrief"].text).jsSlice(0, 260),
-                text: (contentById[id]?["text"].text ?? "").jsSlice(0, 80)
+                picture: inventory.isEmpty ? screen["visualBrief"].text : inventory,
+                visibleText: gate?["visibleText"].items.map(\.jsString) ?? [],
+                text: contentById[id]?["text"].text ?? ""
             )
         }
         let screenIds = screens.map(\.id)
-        let itemCount = items.count
-        let result = try await callLlm("plan", dir, ChatJsonRequest(
-            system: FEEDBACK_SYSTEM,
-            user: feedbackUserPrompt(softwareName: softwareName(state), screens: screens, overview: (content?["cover"]?["overview"].text ?? "").jsSlice(0, 200), hasDesign: !(content?["design"]?["sections"]?.array?.isEmpty ?? true), items: items.map { $0["text"]?.jsString ?? "" }),
-            schema: FEEDBACK_SCHEMA,
-            check: { feedbackCheck($0, screenIds: screenIds, itemCount: itemCount) },
-            temperature: 0.2,
-            maxTokens: 4000
-        ))
+        let hasDesign = state["request"]?["wantDesign"].isTruthy == true || !(content?["design"]?["sections"]?.array?.isEmpty ?? true)
+        let inputs = items.map { FeedbackInput(text: $0["text"]?.jsString ?? "", target: feedbackTargetValid($0["target"]?.string, screenIds: screenIds, hasDesign: hasDesign)) }
+        // 整理失败（模型出错、格式不对）也不报错退出：按用户指定的位置列出，其余的在确认窗口里选位置
+        var raw: JSON = .obj(["summary": "", "actions": [], "questions": []])
+        var notice: String?
+        do {
+            raw = try await callLlm("plan", dir, ChatJsonRequest(
+                system: FEEDBACK_SYSTEM_NATIVE,
+                user: feedbackUserPromptNative(softwareName: softwareName(state), screens: screens, overview: content?["cover"]?["overview"].text ?? "", hasDesign: hasDesign, items: inputs),
+                schema: FEEDBACK_SCHEMA_NATIVE,
+                temperature: 0.2,
+                maxTokens: 4000
+            ))
+        } catch {
+            notice = "自动整理没有成功（\(messageOf(error).jsSlice(0, 120))）。指定了位置的意见已直接列出，其余的请在下面选择要改哪里。"
+        }
+        let repaired = repairFeedbackResult(raw, items: inputs, screenIds: screenIds, hasDesign: hasDesign)
+        let result: JSON = .obj(["summary": raw["summary"].or(""), "actions": .array(repaired.actions), "questions": .array(repaired.questions)])
         func toIds(_ indexes: JSON?) -> [String] {
             uniqued((indexes?.array ?? []).compactMap { value -> String? in
                 guard let number = value.number, number >= 1, Int(number) <= items.count else { return nil }
                 return items[Int(number) - 1]["id"]?.string
             })
         }
-        func labelOf(_ target: String) -> String {
-            if target == "overview" { return "封面介绍" }
-            if target == "design" { return "设计说明" }
-            if target == "all" { return "全部" }
-            if let index = screenIds.firstIndex(of: target) { return "图\(index + 1)「\(screens[index].title)」" }
-            return target
-        }
+        func labelOf(_ target: String) -> String { target == "all" ? "全部" : feedbackTargetLabel(target, screens: screens) }
         // 整理结果再规范一遍：「全部截图」展开成每一屏；同一屏同一类型合并；有重新规划时其余截图/说明动作并进去
         var merged: [(key: String, value: JSON)] = []
         for action in result["actions"].items {
@@ -612,6 +641,7 @@ extension Pipeline {
         let questions: [JSON] = result["questions"].items.map { .obj(["question": $0["question"] ?? "", "items": JSON(toIds($0["items"]))]) }.filter { !($0["question"]?.jsString ?? "").jsTrimmed.isEmpty }
         let feedbackPlan: JSON = .obj([
             "createdAt": .string(isoNow()),
+            "notice": JSON.maybe(notice),
             "summary": result["summary"] ?? "",
             "itemIds": JSON(items.compactMap { $0["id"]?.string }),
             "actions": .array(actions),
@@ -631,9 +661,26 @@ extension Pipeline {
         let state = try readState(dir)
         guard let plan = try readPlan(dir) else { throw StudioError("还没有界面规划") }
         let screenIds = plan["screens"].items.map { $0["id"]?.jsString ?? "" }
-        let actions: [JSON] = chosen.compactMap { action in
-            guard ["image", "text", "overview", "design", "replan"].contains(action["type"]?.string ?? ""), !(action["instruction"]?.jsString ?? "").jsTrimmed.isEmpty else { return nil }
-            return action.merging(.obj(["instruction": .string((action["instruction"]?.jsString ?? "").jsTrimmed), "items": action["items"]?.array.map(JSON.array) ?? []]))
+        // 「全部截图」展开成每一屏
+        let expanded: [JSON] = chosen.flatMap { action -> [JSON] in
+            guard action["type"]?.string == "image", action["target"]?.string == "all" else { return [action] }
+            return screenIds.enumerated().map { index, id in action.merging(.obj(["target": .string(id), "targetLabel": .string("图\(index + 1)")])) }
+        }
+        // 同一屏同一类型的修改合并成一条（确认窗口里手动加的可能和整理结果重复），免得同时改写同一份提示词
+        var actions: [JSON] = []
+        for action in expanded {
+            let type = action["type"]?.string ?? ""
+            let instruction = (action["instruction"]?.jsString ?? "").jsTrimmed
+            guard ["image", "text", "overview", "design", "replan"].contains(type), !instruction.isEmpty else { continue }
+            let target = ["overview", "design"].contains(type) ? type : action["target"]?.jsString ?? ""
+            let items = action["items"]?.array ?? []
+            if let index = actions.firstIndex(where: { $0["type"]?.string == type && ($0["target"]?.jsString ?? "") == target }) {
+                let previous = actions[index]
+                let joined = previous["instruction"]?.jsString == instruction ? instruction : "\(previous["instruction"]?.jsString ?? "")；\(instruction)"
+                actions[index] = previous.merging(.obj(["instruction": .string(joined), "items": JSON(uniqued(previous["items"].items.map(\.jsString) + items.map(\.jsString)))]))
+            } else {
+                actions.append(action.merging(.obj(["target": .string(target), "instruction": .string(instruction), "items": .array(items)])))
+            }
         }
         for action in actions where ["image", "text"].contains(action["type"]?.string ?? "") {
             let target = action["target"]?.jsString ?? ""
@@ -696,6 +743,8 @@ extension Pipeline {
         let at = isoNow()
         let summary = actions.map { "\($0["targetLabel"].truthyValue?.jsString ?? $0["target"]?.jsString ?? "")：\($0["instruction"]?.jsString ?? "")" }.joined(separator: "；")
         let editedList = edited
+        // 重生后验收时核对这条修改有没有体现在图上，没有就自动重生
+        let requestedChanges: [(String, String)] = imageActions.map { ($0["target"]?.jsString ?? "", $0["instruction"]?.jsString ?? "") }
         let textTargets = textActions.map { $0["target"]?.jsString ?? "" }
         let replanInstruction = replan?["instruction"]?.jsString
         let hasOverview = overview != nil
@@ -703,6 +752,7 @@ extension Pipeline {
             for (id, prompt) in editedList {
                 draft.mergeChild("screens", id, .obj(["promptEdited": true, "promptHash": .string(promptIdentity(prompt, draft["request"]?["softwareName"]?.jsString ?? ""))]))
             }
+            for (id, change) in requestedChanges where !id.isEmpty && !change.isEmpty { draft.mergeChild("screens", id, .obj(["requestedChange": .string(change)])) }
             for target in textTargets where draft["screens"]?[target] != nil { draft["screens"]?[target]?["textEdited"] = false }
             if hasOverview { draft["overviewEdited"] = false }
             if let replanInstruction {

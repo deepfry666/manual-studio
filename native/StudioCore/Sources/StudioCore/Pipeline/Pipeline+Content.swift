@@ -20,7 +20,7 @@ extension Pipeline {
             existingById[id] = screen
         }
         let planScreens = plan["screens"].items
-        let planHash = hashObject(.obj(["contentDate": state["request"]?["contentDate"], "profile": plan["profile"] ?? .null, "titles": .array(planScreens.map { $0["title"] ?? .null })]))
+        let planHash = hashObject(.obj(["contentDate": state["request"]?["contentDate"], "earliestDate": JSON.maybe(explicitEarliestDate(state)), "profile": plan["profile"] ?? .null, "titles": .array(planScreens.map { $0["title"] ?? .null })]))
         let neutral = !softwareNameNamesPlatform(name)
         var autoInstructions: [String: String] = [:]
         var inventories: [String: String] = [:]
@@ -35,6 +35,7 @@ extension Pipeline {
                 "title": screen["title"], "contract": screen["textContract"], "mustShow": screen["mustShow"], "sampleData": screen["sampleData"],
                 "inventory": inventories[id].map(JSON.string) ?? .null,
                 "contentDate": state["request"]?["contentDate"],
+                "earliestDate": JSON.maybe(explicitEarliestDate(state)),
             ]))
             contentHashes.append((id, hash))
             let old = existingById[id]
@@ -73,12 +74,15 @@ extension Pipeline {
             if chunks.isEmpty { chunks.append([]) }
             for (index, chunk) in chunks.enumerated() {
                 let wantsOverview = needOverview && index == 0
+                // 截图里本来就有的日期，正文照实描述不算违规（人工确认过的截图也可能带着）
+                let shownDates = dateKeys(chunk.flatMap { state["screens"]?[$0["id"]?.jsString ?? ""]?["gate"]?["visibleText"].items.map(\.jsString) ?? [] }, base: contentDateOf(state))
                 setProgress(dir, .obj(["detail": .string(targets.isEmpty ? "撰写封面介绍" : "撰写说明：第 \(min(targets.count, index * 4 + 1))–\(min(targets.count, index * 4 + chunk.count)) 屏（共 \(targets.count) 屏）")]))
                 let result = try await callLlm("content", dir, ChatJsonRequest(
                     system: CONTENT_SYSTEM.replacingOccurrences(of: "{floor}", with: String(floor)),
                     user: contentUserPrompt(softwareName: softwareName(state), profile: plan["profile"], screens: chunk, inventories: inventories, needOverview: wantsOverview, existingOverview: overview, floor: floor, instructions: instructions, currentTexts: currentTexts) + platformNeutralRule(softwareName(state)) + contentDateRule(state),
                     schema: CONTENT_SCHEMA,
                     check: { contentCheck($0, screens: chunk, needOverview: wantsOverview, floor: floor) + platformProblems(name, "封面介绍或功能说明", [$0["overview"].text] + $0["screens"].items.flatMap { [$0["title"].text, $0["text"].text] }) },
+                    softCheck: { dateProblems(state, "封面介绍或功能说明", [$0["overview"].text] + $0["screens"].items.flatMap { [$0["title"].text, $0["text"].text] }, allowed: shownDates) },
                     temperature: 0.7,
                     maxTokens: 8000
                 ))
@@ -177,7 +181,9 @@ extension Pipeline {
         let designName = softwareName(state)
         let designHits = softwareNameNamesPlatform(designName) ? [] : findPlatformTerms(content["design"]?["sections"].items.flatMap { [$0["title"].text, $0["text"].text] } ?? [])
         let designInstruction = (ctx.designInstruction ?? "").isEmpty && !designHits.isEmpty ? platformFixInstruction(designHits) : ctx.designInstruction
-        if !(content["design"]?["sections"]?.array?.isEmpty ?? true), (state["request"]?["contentDate"].isTruthy != true || content["designContentDate"]?.string == contentDateOf(state)), !ctx.forceDesign, (designInstruction ?? "").isEmpty { return StepOutcome(status: "done") }
+        let designDatesCurrent = state["request"]?["contentDate"].isTruthy != true
+            || (content["designContentDate"]?.string == contentDateOf(state) && content["designEarliestDate"]?.string == explicitEarliestDate(state))
+        if !(content["design"]?["sections"]?.array?.isEmpty ?? true), designDatesCurrent, !ctx.forceDesign, (designInstruction ?? "").isEmpty { return StepOutcome(status: "done") }
         guard let plan = try readPlan(dir) else { throw StudioError("还没有界面规划") }
         try await log(dir, "正在撰写设计说明…")
         let name = softwareName(state)
@@ -191,6 +197,7 @@ extension Pipeline {
             maxTokens: 8000
         ))
         content["designContentDate"] = .string(contentDateOf(state))
+        content["designEarliestDate"] = JSON.maybe(explicitEarliestDate(state))
         content["design"] = .obj(["sections": .array(result["sections"].items.map { .obj(["title": .string($0["title"]?.jsString.jsTrimmed ?? ""), "text": .string($0["text"]?.jsString.jsTrimmed ?? "")]) })])
         try FS.writeJSONAtomic(paths.content, content)
         return StepOutcome(status: "done")
@@ -203,7 +210,7 @@ extension Pipeline {
         let state = try readState(dir)
         let paths = projectPaths(dir)
         guard var content = try FS.readJSON(paths.content) else { throw StudioError("还没有文案") }
-        let tokensHash = hashObject(JSON(forbiddenBrandTokens(softwareName(state), extraTokens(state))))
+        let tokensHash = gateKey(state)
         var reviewed: [JSON] = []
         var pending: [String] = []
         for index in 0..<content["screens"].items.count {
@@ -250,6 +257,7 @@ extension Pipeline {
         content["softwareName"] = .string(name)
         content["compileDate"] = request["compileDate"].truthyValue ?? .string(contentDateChinese(contentDateOf(state)))
         content["contentDate"] = .string(contentDateOf(state))
+        content["earliestDate"] = JSON.maybe(explicitEarliestDate(state))
         content["compileDateOverride"] = .string(request["compileDate"].text)
         content["screens"] = .array(content["screens"].items.enumerated().map { index, screen in screen.merging(.obj(["image": .string("screens/\(screenId(index)).png")])) })
         var txtFields = settings.txtFields
@@ -339,7 +347,7 @@ extension Pipeline {
             for (key, value) in request["txtFields"].fields { txt[key] = value }
             return hashObject(.obj([
                 "content": content ?? .null, "shas": .object(shas), "code": codeSourceFor(state, settings).source ?? .null,
-                "contentDate": request["contentDate"], "compileDate": request["contentDate"].isTruthy ? request["compileDate"] : nil,
+                "contentDate": request["contentDate"], "earliestDate": JSON.maybe(explicitEarliestDate(state)), "compileDate": request["contentDate"].isTruthy ? request["compileDate"] : nil,
                 "txt": .object(txt), "name": request["softwareName"], "bundle": .bool(FS.exists(paths.bundle(softwareName(state)))),
             ]))
         default:

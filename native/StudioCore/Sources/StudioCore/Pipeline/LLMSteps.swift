@@ -53,6 +53,11 @@ public func gateUserPrompt(softwareName: String, tokens: [String], screen: JSON?
     ].filter { !$0.isEmpty }.joined(separator: "\n")
 }
 
+/// 按修改意见重生的截图：另外让看图模型判断这次的修改有没有体现在图上。
+public func gateChangeQuestion(_ change: String) -> String {
+    change.isEmpty ? "" : "\n这张图是按用户的修改意见重新生成的，修改意见：\(change)\n另外输出 changeApplied（图上是否已经明显体现了这条修改意见，true / false；只看修改意见涉及的部分，其余不管；这张图上本来就没有修改意见涉及的内容时也算 true）和 changeEvidence（一句话依据）。"
+}
+
 public struct GateVerdict: Sendable {
     public let passed: Bool
     public let reasons: [String]

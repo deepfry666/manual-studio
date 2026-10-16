@@ -41,6 +41,21 @@ struct CodeSourceRow: View {
     }
 }
 
+/// 内容日期（截图里的「今天」）和最早日期（历史记录最早到哪天）。
+struct ContentDateRows: View {
+    @Binding var contentDate: String
+    @Binding var earliestDate: String
+
+    var body: some View {
+        SettingsRow(label: "内容日期", hint: "截图里的「今天」，默认新建当天") {
+            TextField(localDateKey(), text: $contentDate).textFieldStyle(.roundedBorder).frame(width: 150)
+        }
+        SettingsRow(label: "最早日期", hint: "选填；不填时历史记录只在内容日期前 \(DEFAULT_HISTORY_DAYS) 天内", info: "可填企业成立日期或开发完成日期。截图和正文里的流水、订单、动态等历史记录不会早于这一天；预约、截止等未来安排不受限。") {
+            TextField("YYYY-MM-DD", text: $earliestDate).textFieldStyle(.roundedBorder).frame(width: 150)
+        }
+    }
+}
+
 struct ScreenCountRow: View {
     var hint: String? = nil
     @Binding var autoCount: Bool
@@ -74,6 +89,8 @@ struct SingleProjectForm: View {
     @State private var notes = ""
     @State private var platform = ""
     @State private var wantDesign = false
+    @State private var contentDate = localDateKey()
+    @State private var earliestDate = ""
     @State private var busy = false
     @FocusState private var nameFocused: Bool
 
@@ -105,9 +122,7 @@ struct SingleProjectForm: View {
                         .labelsHidden()
                         .frame(width: 240, alignment: .trailing)
                     }
-                    SettingsRow(label: "内容日期", hint: "默认新建当天；可在项目概览修改") {
-                        Text(localDateKey()).foregroundStyle(.secondary)
-                    }
+                    ContentDateRows(contentDate: $contentDate, earliestDate: $earliestDate)
                     SettingsRow(label: "设计说明章节") {
                         Toggle("", isOn: $wantDesign).toggleStyle(.switch).labelsHidden()
                     }
@@ -129,6 +144,7 @@ struct SingleProjectForm: View {
         .onAppear {
             screenCount = defaultScreens
             platform = PLATFORMS.contains { $0.value == defaultPlatform } ? defaultPlatform : PLATFORMS[0].value
+            contentDate = localDateKey()
             nameFocused = true
         }
     }
@@ -146,6 +162,7 @@ struct SingleProjectForm: View {
                 let dir = try await core.createProject(.obj([
                     "softwareName": .string(name.jsTrimmed), "screenCount": autoCount ? .null : .number(Double(screenCount)),
                     "emphasis": .string(emphasis), "notes": .string(notes), "platform": .string(platform), "wantDesign": .bool(wantDesign),
+                    "contentDate": .string(contentDate.jsTrimmed), "earliestDate": .string(earliestDate.jsTrimmed),
                 ]))
                 if runNow { core.run(dir) }
                 await model.reloadProjects()
@@ -169,6 +186,8 @@ struct BatchProjectForm: View {
     @State private var screenCount = 7
     @State private var platform = ""
     @State private var wantDesign = false
+    @State private var contentDate = localDateKey()
+    @State private var earliestDate = ""
     @State private var startNow = true
     @State private var busy = false
 
@@ -207,9 +226,7 @@ struct BatchProjectForm: View {
                         .labelsHidden()
                         .frame(width: 240, alignment: .trailing)
                     }
-                    SettingsRow(label: "内容日期", hint: "默认新建当天；可在项目概览修改") {
-                        Text(localDateKey()).foregroundStyle(.secondary)
-                    }
+                    ContentDateRows(contentDate: $contentDate, earliestDate: $earliestDate)
                     SettingsRow(label: "设计说明章节") { Toggle("", isOn: $wantDesign).toggleStyle(.switch).labelsHidden() }
                     CodeSourceRow()
                     SettingsRow(label: "创建后直接开始", hint: "不停下确认规划") {
@@ -235,6 +252,7 @@ struct BatchProjectForm: View {
         .onAppear {
             screenCount = defaultScreens
             platform = PLATFORMS.contains { $0.value == defaultPlatform } ? defaultPlatform : PLATFORMS[0].value
+            contentDate = localDateKey()
         }
     }
 
@@ -244,7 +262,7 @@ struct BatchProjectForm: View {
         Task {
             defer { busy = false }
             do {
-                let result = try await core.createProjectsFromList(text, screenCount: autoCount ? nil : screenCount, platform: platform, wantDesign: wantDesign)
+                let result = try await core.createProjectsFromList(text, screenCount: autoCount ? nil : screenCount, platform: platform, wantDesign: wantDesign, contentDate: contentDate.jsTrimmed, earliestDate: earliestDate.jsTrimmed)
                 if startNow, !result.created.isEmpty { await core.batch.enqueue(result.created) }
                 text = ""
                 await model.reloadProjects()

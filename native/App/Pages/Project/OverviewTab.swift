@@ -93,8 +93,13 @@ struct OverviewTab: View {
                 TokenEditor(tokens: Binding(get: { request["extraBrandTokens"].items.map(\.jsString) }, set: { update(["extraBrandTokens": JSON($0)]) }))
             }
             .disabled(disabled)
-            SettingsRow(label: "内容日期", hint: "截图和正文统一使用此日；修改后重新规划、生图及撰写") {
+            SettingsRow(label: "内容日期", hint: "截图里的「今天」；修改后重新规划、生图及撰写") {
                 CommitTextField(placeholder: localDateKey(), value: request["contentDate"].text) { update(["contentDate": .string($0)]) }
+                    .frame(width: 200)
+            }
+            .disabled(disabled)
+            SettingsRow(label: "最早日期", hint: dateRuleActive(data.state) ? "历史记录最早到 \(earliestDateOf(data.state))；留空为内容日期前 \(DEFAULT_HISTORY_DAYS) 天" : "设置内容日期后生效", info: "可填企业成立日期或开发完成日期。截图和正文里的流水、订单、动态等历史记录不会早于这一天；预约、截止等未来安排不受限。") {
+                CommitTextField(placeholder: "选填，YYYY-MM-DD", value: request["earliestDate"].text) { update(["earliestDate": .string($0)]) }
                     .frame(width: 200)
             }
             .disabled(disabled)

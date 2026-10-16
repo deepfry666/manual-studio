@@ -10,6 +10,8 @@ func renderCodeTemplate(_ template: CodeWordTemplate, project: String, software:
     let width: CGFloat = 595.3, height: CGFloat = 841.89
     let bodyRect = CGRect(x: 60, y: 72, width: width - 120, height: height - 144)
     let headerRect = CGRect(x: 60, y: height - 58, width: width - 120, height: 30)
+    // 页眉左边软件名，右上角页码（软著源程序材料的要求）；软件名不能伸进页码的位置
+    let nameRect = CGRect(x: headerRect.minX, y: headerRect.minY, width: headerRect.width - 80, height: headerRect.height)
     // 模板原字体未安装时采用系统宋体，嵌入PDF，确保中文与英文都能打印。
     let original = DOC_FONTS["code"]!
     let families = installedFontFamilies()
@@ -22,9 +24,9 @@ func renderCodeTemplate(_ template: CodeWordTemplate, project: String, software:
     }
     let fontName = baseFont.familyName ?? baseFont.fontName
 
-    func frame(_ text: String, size: CGFloat, rect: CGRect) throws -> CTFrame {
+    func frame(_ text: String, size: CGFloat, rect: CGRect, alignment: NSTextAlignment = .left) throws -> CTFrame {
         let paragraph = NSMutableParagraphStyle()
-        paragraph.alignment = .left
+        paragraph.alignment = alignment
         paragraph.lineBreakMode = .byWordWrapping
         paragraph.minimumLineHeight = size * 1.2
         paragraph.maximumLineHeight = size * 1.2
@@ -61,7 +63,7 @@ func renderCodeTemplate(_ template: CodeWordTemplate, project: String, software:
         if fits { chosen = size; break }
     }
     guard let size = chosen else { throw StudioError("完整代码无法以至少8磅字号排入60页；请调整代码模板，原交付包未改动") }
-    let header = try frame(software, size: 11, rect: headerRect)
+    let header = try frame(software, size: 11, rect: nameRect)
     guard CTFrameGetVisibleStringRange(header).length == (software as NSString).length else { throw StudioError("软件名过长，代码页眉放不下；原交付包未改动") }
     try template.write(project: project, software: software, printFont: fontName, printSize: Int(size * 2))
     let target = Path.join(project, software, "\(software)\(CODE_SUFFIX).pdf")
@@ -69,10 +71,11 @@ func renderCodeTemplate(_ template: CodeWordTemplate, project: String, software:
     defer { FS.remove(temp) }
     var media = CGRect(x: 0, y: 0, width: width, height: height)
     guard let context = CGContext(URL(fileURLWithPath: temp) as CFURL, mediaBox: &media, nil) else { throw StudioError("无法创建代码PDF") }
-    for text in chunks {
+    for (index, text) in chunks.enumerated() {
         context.beginPDFPage(nil)
         context.textMatrix = .identity
         CTFrameDraw(header, context)
+        CTFrameDraw(try frame("第 \(index + 1) 页", size: 11, rect: headerRect, alignment: .right), context)
         CTFrameDraw(try frame(text, size: size, rect: bodyRect), context)
         context.endPDFPage()
     }

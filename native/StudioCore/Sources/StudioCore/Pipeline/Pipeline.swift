@@ -182,6 +182,13 @@ public final class Pipeline: @unchecked Sendable {
 
     func softwareName(_ state: JSON) -> String { state["request"]?["softwareName"]?.jsString ?? "" }
 
+    /// 截图验收结果在这些条件不变时才有效：禁词，以及设置了内容日期的项目的日期规则。
+    func gateKey(_ state: JSON) -> String {
+        let tokens = JSON(forbiddenBrandTokens(softwareName(state), extraTokens(state)))
+        guard let dates = datePolicyFields(state) else { return hashObject(tokens) }
+        return hashObject(.obj(["tokens": tokens, "dates": dates]))
+    }
+
     func extraTokens(_ state: JSON) -> [String] { state["request"]?["extraBrandTokens"].items.map(\.jsString) ?? [] }
 
     // MARK: - S1 规划
@@ -194,11 +201,14 @@ public final class Pipeline: @unchecked Sendable {
         let screenCount = request["screenCount"].truthyValue?.int
         let name = softwareName(ctx.state)
         try await log(dir, "正在让大模型规划界面…")
+        let planState = ctx.state
         let plan = try await callLlm("plan", dir, ChatJsonRequest(
             system: PLAN_SYSTEM,
             user: planUserPrompt(softwareName: name, screenCount: screenCount, emphasis: request["emphasis"].text, notes: request["notes"].text, platform: platform) + platformNeutralRule(name, forPlan: true) + contentDateRule(ctx.state),
             schema: PLAN_SCHEMA,
             check: { planCheck($0, softwareName: name, screenCount: screenCount) + platformProblems(name, "规划的用户、流程或界面文字", planVisibleTexts($0)) },
+            // 示例数据里的日期在生图前就拦下，比生完图再重生便宜
+            softCheck: { dateProblems(planState, "规划的示例数据或界面描述", planVisibleTexts($0) + $0["screens"].items.map { $0["visualBrief"].text }) },
             temperature: 0.8,
             maxTokens: 8000
         ))
@@ -308,7 +318,8 @@ public final class Pipeline: @unchecked Sendable {
         return StepOutcome(status: "done")
     }
 
-    func generateScreen(_ ctx: StepContext, _ id: String, reason: String? = nil) async throws -> GenerateResult {
+    /// retryHint：只用于这一次生成的补充要求（例如上一张验收没过的原因），不写进提示词文件。
+    func generateScreen(_ ctx: StepContext, _ id: String, reason: String? = nil, retryHint: String? = nil) async throws -> GenerateResult {
         let dir = ctx.projectDir
         let state = ctx.state
         let paths = projectPaths(dir)
@@ -330,12 +341,21 @@ public final class Pipeline: @unchecked Sendable {
             let patch: JSON = ["promptHash": .string(promptIdentity(prompt, name)), "planRowHash": .string(planRowHash(screen, ui, platform, settings.image.targetSize)), "promptEdited": false]
             try await update(dir) { draft in draft.mergeChild("screens", id, patch) }
         }
-        prompt = ensureContentDateRule(prompt, state)
-        if FS.readTextIfExists(paths.promptFile(id)) != prompt { try FS.writeAtomic(paths.promptFile(id), prompt) }
+        if dateRuleActive(state) {
+            let ruled = ensureContentDateRule(prompt, state)
+            if ruled != prompt {
+                prompt = ruled
+                try FS.writeAtomic(paths.promptFile(id), prompt)
+                // 提示词因日期规则更新：同步记下新哈希，否则下次运行会以为提示词改过，又把这一屏重生一遍
+                let hash = promptIdentity(prompt, name)
+                try await update(dir) { draft in draft.mergeChild("screens", id, ["promptHash": .string(hash)]) }
+            }
+        }
+        let sentPrompt = retryHint.map { ensureBrandBan(prompt.replacingAll(BRAND_BAN_BLOCK, with: "").jsTrimmedEnd + "\n\nThis attempt must fix the previous review result: \($0)") } ?? prompt
         emit(.obj(["type": "screen", "projectDir": .string(dir), "screenId": .string(id), "status": "generating", "reason": JSON.maybe(reason)]))
         setScreenProgress(dir, id, ["status": .string(reason != nil ? "regenerating" : "generating"), "startedAt": .number(nowMs()), "finishedAt": nil, "provider": nil, "hedged": false])
         let result = try await gateway.generate(GenerateRequest(
-            projectDir: dir, projectName: name, screenId: id, prompt: prompt, outputPath: paths.screenFile(id),
+            projectDir: dir, projectName: name, screenId: id, prompt: sentPrompt, outputPath: paths.screenFile(id),
             alternatesDir: paths.alternates, archiveRoot: paths.archive, batchId: ctx.batchId
         ))
         let imageSha = try sha256File(paths.screenFile(id))
@@ -450,37 +470,56 @@ public final class Pipeline: @unchecked Sendable {
             }
             setScreenProgress(dir, id, ["status": "checking"])
             let image = try visionImage(file)
+            let requestedChange = state["screens"]?[id]?["requestedChange"]?.string?.jsTrimmed ?? ""
             let result = try await callLlm("gate", dir, ChatJsonRequest(
                 system: GATE_SYSTEM,
-                user: gateUserPrompt(softwareName: softwareName(state), tokens: tokens, screen: screen),
+                user: gateUserPrompt(softwareName: softwareName(state), tokens: tokens, screen: screen) + gateChangeQuestion(requestedChange),
                 images: [image],
                 schema: GATE_SCHEMA,
                 temperature: 0.1,
                 maxTokens: 4000
             ))
             let verdict = judgeGate(result, tokens)
+            var reasons = verdict.reasons
+            var retryHints: [String] = []
+            // 日期：按看图模型抄下的图上文字复核，早于最早日期就重生
+            let earlyDates = dateRuleActive(state)
+                ? datesBefore(result["visibleText"].items.map(\.jsString) + [result["screenTitle"].text], earliest: earliestDateOf(state), base: contentDateOf(state))
+                : []
+            if !earlyDates.isEmpty {
+                reasons.append("截图里有早于 \(earliestDateOf(state)) 的日期：\(earlyDates.joined(separator: "、"))")
+                retryHints.append("every date shown must be between \(earliestDateOf(state)) and \(contentDateOf(state)) (future plans may be later); the previous image showed earlier dates: \(earlyDates.joined(separator: ", "))")
+            }
+            // 修改意见：看图模型判断这次的修改有没有体现在图上，没有就重生
+            if !requestedChange.isEmpty, result["changeApplied"] == .bool(false) {
+                reasons.append("截图没有按修改意见改：\(requestedChange)\(result["changeEvidence"].text.isEmpty ? "" : "（\(result["changeEvidence"].text)）")")
+                retryHints.append("the requested change was not visible in the previous image; make it clearly visible: \(requestedChange)")
+            }
+            let passed = reasons.isEmpty
+            let failureReasons = reasons
             let checkedAt = isoNow()
             let gate: JSON = .obj([
-                "status": .string(verdict.passed ? "passed" : "failed"), "method": "vision", "sha": .string(sha), "tokensHash": .string(tokensHash),
-                "reasons": JSON(verdict.reasons), "hits": JSON(verdict.hits), "screenTitle": result["screenTitle"].or(""),
+                "status": .string(passed ? "passed" : "failed"), "method": "vision", "sha": .string(sha), "tokensHash": .string(tokensHash),
+                "reasons": JSON(reasons), "hits": JSON(verdict.hits), "screenTitle": result["screenTitle"].or(""),
                 "visibleText": .array(Array(result["visibleText"].items.prefix(80))), "inventory": result["inventory"],
                 "warnings": result["warnings"].or([]), "checkedAt": .string(checkedAt), "rounds": .number(Double(round + 1)),
             ])
             try await update(dir) { draft in
                 draft.mergeChild("screens", id, ["gate": gate])
-                appendLog(&draft, verdict.passed ? "\(id) 验收通过" : "\(id) 验收不通过：\(verdict.reasons.joined(separator: "；"))", verdict.passed ? "info" : "warn")
+                if passed { draft["screens"]?[id]?["requestedChange"] = nil }
+                appendLog(&draft, passed ? "\(id) 验收通过" : "\(id) 验收不通过：\(failureReasons.joined(separator: "；"))", passed ? "info" : "warn")
             }
             try await updateRecord(dir) { record in
                 record["gate"]?[id] = .obj(["status": gate["status"], "method": "vision", "imageSha256": .string(sha), "reasons": gate["reasons"], "checkedAt": .string(checkedAt)])
                 record.append("history", .obj(["at": .string(checkedAt), "event": "gate", "screenId": .string(id), "status": gate["status"], "method": "vision", "reasons": gate["reasons"]]))
             }
-            setScreenProgress(dir, id, ["status": .string(verdict.passed ? "passed" : round >= limit ? "failed" : "regenerating"), "gateRounds": .number(Double(round + 1))])
-            if verdict.passed { return gate }
+            setScreenProgress(dir, id, ["status": .string(passed ? "passed" : round >= limit ? "failed" : "regenerating"), "gateRounds": .number(Double(round + 1))])
+            if passed { return gate }
             // limit = 每屏最多自动重生几次（设置里的数字），用完还不通过就交给人处理
             if round >= limit { return gate }
             var screenCtx = ctx
             screenCtx.state = state
-            _ = try await generateScreen(screenCtx, id, reason: "验收不通过，重新生成")
+            _ = try await generateScreen(screenCtx, id, reason: "验收不通过，重新生成", retryHint: retryHints.isEmpty ? nil : retryHints.joined(separator: "; "))
             round += 1
         }
     }
@@ -490,7 +529,7 @@ public final class Pipeline: @unchecked Sendable {
         let state = try readState(dir)
         guard let plan = try readPlan(dir) else { throw StudioError("还没有界面规划") }
         let tokens = forbiddenBrandTokens(softwareName(state), extraTokens(state))
-        let tokensHash = hashObject(JSON(tokens))
+        let tokensHash = gateKey(state)
         let llmAvailable = await resolveLlm("gate") != nil
         let before = progressScreens(dir)
         let screens = plan["screens"].items

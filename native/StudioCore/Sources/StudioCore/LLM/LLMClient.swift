@@ -143,15 +143,18 @@ public struct ChatJsonRequest: Sendable {
     public var images: [String] = []
     public var schema: JSON?
     public var check: (@Sendable (JSON) -> [String])?
+    /// 软性检查：问题会带回去让模型修，但重试用完后只剩这类问题时仍然返回最后一次合格的输出，不让整个项目失败。
+    public var softCheck: (@Sendable (JSON) -> [String])?
     public var temperature: Double = 0.6
     public var maxTokens: Int = 8000
 
-    public init(system: String, user: String, images: [String] = [], schema: JSON? = nil, check: (@Sendable (JSON) -> [String])? = nil, temperature: Double = 0.6, maxTokens: Int = 8000) {
+    public init(system: String, user: String, images: [String] = [], schema: JSON? = nil, check: (@Sendable (JSON) -> [String])? = nil, softCheck: (@Sendable (JSON) -> [String])? = nil, temperature: Double = 0.6, maxTokens: Int = 8000) {
         self.system = system
         self.user = user
         self.images = images
         self.schema = schema
         self.check = check
+        self.softCheck = softCheck
         self.temperature = temperature
         self.maxTokens = maxTokens
     }
@@ -170,6 +173,7 @@ public func chatJson(vendor: LlmVendor, apiKey: String, model: String, request: 
         ["role": "user", "content": userContent],
     ]
     var lastProblem = ""
+    var acceptable: JSON?
     for _ in 0..<3 {
         let result = try await chatCompletion(vendor: vendor, apiKey: apiKey, model: model, messages: messages, temperature: request.temperature, maxTokens: request.maxTokens, http: http, retryDelay: retryDelay)
         var parsed: JSON?
@@ -185,12 +189,15 @@ public func chatJson(vendor: LlmVendor, apiKey: String, model: String, request: 
                 if !errors.isEmpty { problems.append(SchemaValidator.describe(errors)) }
             }
             if let check = request.check { problems.append(contentsOf: check(parsed)) }
-            if problems.isEmpty { return parsed }
-            lastProblem = problems.joined(separator: "；")
+            let soft = problems.isEmpty ? request.softCheck?(parsed) ?? [] : []
+            if problems.isEmpty && soft.isEmpty { return parsed }
+            if problems.isEmpty { acceptable = parsed }
+            lastProblem = (problems + soft).joined(separator: "；")
         }
         messages.append(["role": "assistant", "content": .string(result.text.jsSlice(0, 12000))])
         messages.append(["role": "user", "content": .string("上面的输出不符合要求：\(lastProblem)。请修正后重新输出完整的 JSON 对象。")])
     }
+    if let acceptable { return acceptable }
     throw LlmError("模型多次输出都不符合格式要求：\(lastProblem)", kind: "bad-output")
 }
 

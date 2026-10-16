@@ -370,6 +370,9 @@ public final class StudioCore: @unchecked Sendable {
         if FS.exists(dir), inspectProject(dir) != nil { throw StudioError("工作区里已经有「\(softwareName)」这个项目，请用「导入历史项目」或换个名字") }
         let contentDate = request["contentDate"].text.jsTrimmed
         if !contentDate.isEmpty && !validContentDate(contentDate) { throw StudioError("内容日期请填写有效的 YYYY-MM-DD 日期") }
+        let earliestDate = request["earliestDate"].text.jsTrimmed
+        if !earliestDate.isEmpty && !validContentDate(earliestDate) { throw StudioError("最早日期请填写有效的 YYYY-MM-DD 日期，或留空") }
+        if !earliestDate.isEmpty, earliestDate > (contentDate.isEmpty ? localDateKey() : contentDate) { throw StudioError("最早日期不能晚于内容日期") }
         try FS.mkdirp(dir)
         // 版本号自动判断；代码来源用总设置里的（第一次生成交付包时记下来）
         let versionPolicy = request["versionPolicy"]?.string == "separate-metadata" ? "separate-metadata" : detectVersion(softwareName) != nil ? "in-name" : "none"
@@ -379,6 +382,7 @@ public final class StudioCore: @unchecked Sendable {
         fields["codeSource"] = .null
         fields["workspaceDir"] = nil
         fields["contentDate"] = .string(contentDate.isEmpty ? localDateKey() : contentDate)
+        fields["earliestDate"] = .string(earliestDate)
         fields["createdAt"] = request["createdAt"].truthyValue ?? .string(localDateKey())
         let state = newState(fields)
         try await projectStore.write(dir, state)
@@ -390,7 +394,9 @@ public final class StudioCore: @unchecked Sendable {
     }
 
     /// 批量新建：每行一个软件名，可选用逗号带上 截图数、重点功能、补充说明。
-    public func createProjectsFromList(_ text: String, screenCount: Int?, platform: String, wantDesign: Bool) async throws -> (created: [String], errors: [String]) {
+    public func createProjectsFromList(_ text: String, screenCount: Int?, platform: String, wantDesign: Bool, contentDate: String = "", earliestDate: String = "") async throws -> (created: [String], errors: [String]) {
+        if !contentDate.isEmpty && !validContentDate(contentDate) { throw StudioError("内容日期请填写有效的 YYYY-MM-DD 日期") }
+        if !earliestDate.isEmpty && !validContentDate(earliestDate) { throw StudioError("最早日期请填写有效的 YYYY-MM-DD 日期，或留空") }
         let rows = parseBatchList(text)
         if rows.isEmpty { throw StudioError("没有读到软件名（每行一个）") }
         var created: [String] = []
@@ -403,6 +409,7 @@ public final class StudioCore: @unchecked Sendable {
                 let dir = try await createProject(.obj([
                     "softwareName": .string(row.softwareName), "screenCount": JSON.orNull(row.screenCount ?? screenCount), "emphasis": .string(row.emphasis),
                     "notes": .string(row.notes), "platform": .string(platform), "wantDesign": .bool(wantDesign),
+                    "contentDate": .string(contentDate), "earliestDate": .string(earliestDate),
                 ]))
                 created.append(dir)
             } catch {

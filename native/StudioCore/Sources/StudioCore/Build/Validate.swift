@@ -119,7 +119,8 @@ public func validateDelivery(projectDir: String, bundleDir: String, softwareName
         do {
             let docx = try inspectDocx(Path.join(bundleDir, code))
             if !docx.xml.contains(xmlText(softwareName)) { errors.append("代码 Word 里没有完整软件名") }
-            if Rx.test("PAGE|instrText|fldChar", docx.headerXml) { errors.append("代码 Word 页眉不应包含页码域（模板约定）") }
+            // 旧模板约定代码页眉不带页码域；Word 代码模板模式由软件自己加右上角页码（带书签标记），只允许这一种
+            if Rx.test("PAGE|instrText|fldChar", CodeWordTemplate.removePageNumber(docx.headerXml)) { errors.append("代码 Word 页眉不应包含页码域（模板约定）") }
         } catch {
             errors.append("代码 Word 无法读取：\(messageOf(error))")
         }

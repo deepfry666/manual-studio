@@ -61,7 +61,7 @@ public struct CodeWordTemplate: Sendable {
         let headers = zip.entries.filter { $0.name.hasPrefix("word/header") && $0.name.hasSuffix(".xml") }
         guard !headers.isEmpty else { throw StudioError("Word 代码模板需要软件名页眉") }
         for entry in headers {
-            let header = try Self.parse(zip.read(entry))
+            let header = try Self.parse(Data(Self.removePageNumber(String(decoding: try zip.read(entry), as: UTF8.self)).utf8))
             guard try header.nodes(forXPath: "//*[local-name()='fldChar' or local-name()='instrText' or local-name()='drawing' or local-name()='pict']").isEmpty,
                   try header.nodes(forXPath: "//*[local-name()='t']").contains(where: { !($0.stringValue ?? "").jsTrimmed.isEmpty })
             else { throw StudioError("Word 代码模板页眉需为纯文本软件名") }
@@ -72,9 +72,63 @@ public struct CodeWordTemplate: Sendable {
         try XMLDocument(data: data, options: [.nodePreserveAll, .nodeLoadExternalEntitiesNever])
     }
 
+    // MARK: 页眉页码
+    // 软著源程序材料要在页眉写软件名和版本号，右上角标页码。页码用 Word 的 PAGE 域，
+    // 前后用书签包住，再次生成或读回时能原样去掉，不会叠加。
+
+    private static let pageMarkStart = #"<w:bookmarkStart w:id="90201" w:name="_ManualStudioPageNo"/>"#
+    private static let pageMarkEnd = #"<w:bookmarkEnd w:id="90201"/>"#
+    private static let pageTabs = #"<w:tabs><w:tab w:val="right" w:pos="[0-9]+"/></w:tabs>"#
+
+    /// 正文宽度（页宽减左右页边距，单位 twip），页码靠这个位置的右对齐制表位放到右上角。
+    static func textWidthTwips(_ document: String) -> Int {
+        let width = Rx.match(#"<w:pgSz\b[^>]*\bw:w="([0-9]+)""#, document)?[1].flatMap { Int($0) } ?? 11906
+        let margin = Rx.match(#"<w:pgMar\b[^>]*>"#, document)?[0] ?? ""
+        let left = Rx.match(#"\bw:left="([0-9]+)""#, margin)?[1].flatMap { Int($0) } ?? 1200
+        let right = Rx.match(#"\bw:right="([0-9]+)""#, margin)?[1].flatMap { Int($0) } ?? 1200
+        return max(1000, width - left - right)
+    }
+
+    static func removePageNumber(_ header: String) -> String {
+        var text = Rx.replace(NSRegularExpression.escapedPattern(for: pageMarkStart) + #"[\s\S]*?"# + NSRegularExpression.escapedPattern(for: pageMarkEnd), in: header, with: "")
+        text = Rx.replace(pageTabs, in: text, with: "")
+        return text
+    }
+
+    /// 在第一个有文字的页眉段落末尾加「第 N 页」，字体字号沿用软件名那一段。
+    static func addPageNumber(_ header: String, tabPosition: Int) -> String {
+        let ns = header as NSString
+        guard let regex = try? NSRegularExpression(pattern: #"<w:p(?:\s[^>]*)?>[\s\S]*?</w:p>"#),
+              let match = regex.matches(in: header, range: NSRange(location: 0, length: ns.length)).first(where: { ns.substring(with: $0.range).contains("<w:t") })
+        else { return header }
+        var paragraph = ns.substring(with: match.range)
+        let runProps = Rx.match(#"<w:rPr>[\s\S]*?</w:rPr>"#, paragraph)?[0] ?? ""
+        let tabs = #"<w:tabs><w:tab w:val="right" w:pos="\#(tabPosition)"/></w:tabs>"#
+        if Rx.test(#"<w:pPr\s*/>"#, paragraph) {
+            paragraph = Rx.replaceFirst(#"<w:pPr\s*/>"#, in: paragraph, with: "<w:pPr>\(tabs)</w:pPr>")
+        } else if Rx.test(#"<w:pPr(?:\s[^>]*)?>"#, paragraph) {
+            paragraph = Rx.replaceFirst(#"(<w:pPr(?:\s[^>]*)?>)"#, in: paragraph, with: "$1\(tabs)")
+        } else {
+            paragraph = Rx.replaceFirst(#"(<w:p(?:\s[^>]*)?>)"#, in: paragraph, with: "$1<w:pPr>\(tabs)</w:pPr>")
+        }
+        func run(_ inner: String) -> String { "<w:r>\(runProps)\(inner)</w:r>" }
+        let field = pageMarkStart
+            + run(#"<w:tab/><w:t xml:space="preserve">第 </w:t>"#)
+            + run(#"<w:fldChar w:fldCharType="begin"/>"#)
+            + run(#"<w:instrText xml:space="preserve"> PAGE </w:instrText>"#)
+            + run(#"<w:fldChar w:fldCharType="separate"/>"#)
+            + run("<w:t>1</w:t>")
+            + run(#"<w:fldChar w:fldCharType="end"/>"#)
+            + run(#"<w:t xml:space="preserve"> 页</w:t>"#)
+            + pageMarkEnd
+        paragraph = paragraph.replacingOccurrences(of: "</w:p>", with: field + "</w:p>", options: .backwards, range: paragraph.range(of: "</w:p>", options: .backwards))
+        return ns.replacingCharacters(in: match.range, with: paragraph)
+    }
+
     public func write(project: String, software: String, printFont: String? = nil, printSize: Int? = nil) throws {
         try assertSafeSoftwareName(software)
         let zip = try ZipReader(data)
+        let tabPosition = Self.textWidthTwips(String(decoding: try zip.read("word/document.xml") ?? Data(), as: UTF8.self))
         var output = ZipWriter()
         for entry in zip.entries {
             if entry.isDirectory { output.addDirectory(entry.name); continue }
@@ -109,10 +163,10 @@ public struct CodeWordTemplate: Sendable {
                 }
                 bytes = Data((patched as String).utf8)
             } else if entry.name.hasPrefix("word/header") && entry.name.hasSuffix(".xml") {
-                let header = try Self.parse(bytes)
+                let header = try Self.parse(Data(Self.removePageNumber(String(decoding: bytes, as: UTF8.self)).utf8))
                 let texts = try header.nodes(forXPath: "//*[local-name()='t']")
                 for (index, text) in texts.enumerated() { text.stringValue = index == 0 ? software : "" }
-                bytes = header.xmlData(options: [.nodePreserveAll])
+                bytes = Data(Self.addPageNumber(String(decoding: header.xmlData(options: [.nodePreserveAll]), as: UTF8.self), tabPosition: tabPosition).utf8)
             } else if entry.name == "docProps/app.xml" {
                 let app = try Self.parse(bytes)
                 // 缓存页数不能作为验收依据，实际页数写进构建记录。

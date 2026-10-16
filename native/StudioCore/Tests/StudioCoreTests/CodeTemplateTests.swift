@@ -1,4 +1,5 @@
 import Foundation
+import PDFKit
 import Testing
 @testable import StudioCore
 
@@ -33,6 +34,16 @@ struct CodeTemplateTests {
         let header = String(decoding: try #require(try after.read("word/header1.xml")), as: UTF8.self)
         #expect(header.contains(name))
         #expect(!header.contains("某项目"))
+        #expect(header.contains(" PAGE "), "页眉右上角要有页码域")
+        #expect(Rx.count("_ManualStudioPageNo", header) == 1)
+        // 已生成的代码 Word 能再当模板读回，再次生成不会叠加第二个页码
+        let again = try FS.makeTempDirectory(prefix: "code-template-again-")
+        defer { FS.remove(again) }
+        try result.write(project: again, software: name)
+        let rewritten = try ZipReader(FS.read(Path.join(again, name, "\(name)\(CODE_SUFFIX).docx")))
+        let header2 = String(decoding: try #require(try rewritten.read("word/header1.xml")), as: UTF8.self)
+        #expect(Rx.count("_ManualStudioPageNo", header2) == 1)
+        #expect(Rx.count("<w:tabs>", header2) == 1)
         #expect(try codeExactPages(target) == 60)
         #expect(try FS.read(CodeWordTemplate.bundledPath) == original)
     }
@@ -77,6 +88,10 @@ struct CodeTemplateTests {
             let pdf = Path.join(dir, name, "\(name)\(CODE_SUFFIX).pdf")
             let pages = try #require(countPdfPages(pdf))
             #expect(pages == 60)
+            let document = try #require(PDFDocument(url: URL(fileURLWithPath: pdf)))
+            #expect(document.page(at: 0)?.string?.contains("第 1 页") == true, "代码 PDF 页眉要有页码")
+            #expect(document.page(at: 59)?.string?.contains("第 60 页") == true)
+            #expect(document.page(at: 0)?.string?.contains(name) == true)
             #expect(project["state"]?["lastBuild"]?["codePdfPages"]?.int == pages)
             let manifest = try readJSONFile(projectPaths(dir).manifest)
             #expect(manifest["codePagination"]?["pdfPages"]?.int == pages)
