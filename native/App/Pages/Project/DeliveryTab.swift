@@ -17,6 +17,9 @@ struct DeliveryTab: View {
         let oldCodeDoc = data.bundleFiles.contains { $0.contains("_代码-（JAVA）") }
         AdaptiveColumns(breakpoint: 760, trailingWidth: 360) {
             VStack(alignment: .leading, spacing: 16) {
+                if !data.externalEdits.isEmpty, !readOnly {
+                    Banner(.info, "这些文件在上次生成后改过：\(data.externalEdits.joined(separator: "、"))", message: "可能是在 WPS 里手改的。之后更新交付包时会先问你；选择覆盖时，手改的文件会另存到项目的 archive 文件夹，不会被清理。")
+                }
                 SettingsGroup(title: "交付文件", footer: nil, trailing: readOnly ? nil : AnyView(
                     Button("生成 / 更新", systemImage: "hammer") { model.core?.run(data.dir) }.buttonStyle(.glassProminent).disabled(running)
                 )) {

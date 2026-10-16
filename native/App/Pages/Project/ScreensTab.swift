@@ -22,6 +22,7 @@ struct ScreensTab: View {
     @State private var promptEdit: ScreenItem?
     @State private var alternates: ScreenItem?
     @State private var regenerate: ScreenItem?
+    @State private var history: ScreenItem?
 
     var body: some View {
         let readOnly = data.readOnly
@@ -35,6 +36,7 @@ struct ScreensTab: View {
                                onPreview: { preview = screen },
                                onRegenerate: { regenerate = screen },
                                onAlternates: { alternates = screen },
+                               onHistory: { history = screen },
                                onPrompt: { promptEdit = screen },
                                onManual: { passed in manual(screen, passed) })
                 }
@@ -58,13 +60,22 @@ struct ScreensTab: View {
                     }
                 }
             }
+            .sheet(item: $history) { screen in
+                ScreenHistorySheet(screen: screen) { file in
+                    Task {
+                        let ok = await model.perform("已换回，刚才那张也存进了「以前的截图」") { try await model.core?.pipeline.restoreScreen(data.dir, screen.id, file) }
+                        if ok { history = nil }
+                        onChanged()
+                    }
+                }
+            }
             .confirmationDialog(regenerate.map { "重新生成 \($0.id)？" } ?? "", isPresented: Binding(get: { regenerate != nil }, set: { if !$0 { regenerate = nil } }), titleVisibility: .visible) {
                 Button("重新生成") {
                     guard let screen = regenerate else { return }
                     Task { await model.perform { _ = try model.core?.pipeline.regenerateScreen(data.dir, screen.id) } }
                 }
             } message: {
-                Text("会花一张图的费用。旧图会先归档，新图生成后自动验收，文案会按新截图重写这一屏（人工改过的除外）。")
+                Text("会花一张图的费用。现在这张会存进「以前的截图」，不满意可以换回来。新图生成后自动验收，文案会按新截图重写这一屏（人工改过的除外）。")
             }
         }
     }
@@ -92,6 +103,7 @@ struct ScreenCard: View {
     let onPreview: () -> Void
     let onRegenerate: () -> Void
     let onAlternates: () -> Void
+    let onHistory: () -> Void
     let onPrompt: () -> Void
     let onManual: (Bool) -> Void
 
@@ -139,10 +151,18 @@ struct ScreenCard: View {
                 }
                 if !readOnly {
                     HStack(spacing: 2) {
-                        Button(action: onRegenerate) { Image(systemName: "arrow.clockwise") }.help("重新生成这一屏")
+                        Button(action: onRegenerate) { Label("重新生成", systemImage: "arrow.clockwise").labelStyle(.iconOnly) }.help("重新生成这一屏")
+                        Button(action: onHistory) {
+                            HStack(spacing: 3) {
+                                Label("以前的截图", systemImage: "clock.arrow.circlepath").labelStyle(.iconOnly)
+                                if !screen.history.isEmpty { Text("\(screen.history.count)") }
+                            }
+                        }
+                        .help(screen.history.isEmpty ? "还没有以前的截图" : "以前的截图 \(screen.history.count) 张，可以换回")
+                        .disabled(screen.history.isEmpty)
                         Button(action: onAlternates) {
                             HStack(spacing: 3) {
-                                Image(systemName: "arrow.left.arrow.right")
+                                Label("备选图", systemImage: "arrow.left.arrow.right").labelStyle(.iconOnly)
                                 if !screen.alternates.isEmpty { Text("\(screen.alternates.count)") }
                             }
                         }
@@ -150,11 +170,12 @@ struct ScreenCard: View {
                         .disabled(screen.alternates.isEmpty)
                         Spacer()
                         Menu {
+                            Button("以前的截图…", action: onHistory).disabled(screen.history.isEmpty)
                             Button("查看 / 编辑提示词", action: onPrompt)
                             Button("人工确认：没有软件名") { onManual(true) }
                             Button("人工判定：不合格") { onManual(false) }
                         } label: {
-                            Image(systemName: "ellipsis.circle")
+                            Label("更多", systemImage: "ellipsis.circle").labelStyle(.iconOnly)
                         }
                         .menuStyle(.borderlessButton)
                         .menuIndicator(.hidden)
@@ -263,5 +284,40 @@ struct AlternatesSheet: View {
         }
         .padding(22)
         .frame(width: 760, height: 560)
+    }
+}
+
+/// 以前用过的截图：重新生成、换备选图时旧图存在项目的 archive 文件夹，这里可以换回
+struct ScreenHistorySheet: View {
+    let screen: ScreenItem
+    let onUse: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("\(screen.id) 以前的截图").font(.title2.weight(.semibold))
+                Spacer()
+                Button("关闭") { dismiss() }.keyboardShortcut(.cancelAction)
+            }
+            Text("换回后要重新验收，这一屏的说明会按换回的截图重写（人工改过的除外）。现在这张也会存进来，随时能再换。").foregroundStyle(.secondary)
+            ScrollView {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 16)], spacing: 16) {
+                    VStack(spacing: 8) {
+                        ScreenImage(path: screen.file, version: screen.mtime).frame(height: 280).clipShape(RoundedRectangle(cornerRadius: 10))
+                        Text("现在用的").font(.caption.weight(.semibold))
+                    }
+                    ForEach(Array(screen.history.enumerated()), id: \.offset) { _, item in
+                        VStack(spacing: 8) {
+                            ScreenImage(path: item["file"]?.string).frame(height: 280).clipShape(RoundedRectangle(cornerRadius: 10))
+                            Text(formatTime(item["at"]?.string)).font(.caption).foregroundStyle(.secondary)
+                            Button("换回这张") { onUse(item["file"]?.string ?? "") }
+                        }
+                    }
+                }
+            }
+        }
+        .padding(22)
+        .frame(width: 820, height: 620)
     }
 }

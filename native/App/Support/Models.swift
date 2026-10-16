@@ -135,6 +135,10 @@ struct ProjectData {
     var log: [JSON] { state["log"].items }
     var feedback: [JSON] { state["feedback"].items }
     var pendingFeedback: [JSON] { feedback.filter { $0["status"]?.string == "pending" } }
+    /// 文字的历史版本（新的在前）
+    var contentHistory: [JSON] { json["contentHistory"].items }
+    /// 上次生成后在软件外被改过的交付文件
+    var externalEdits: [String] { json["externalEdits"].items.compactMap(\.string) }
     var timing: JSON? { state["timing"].truthyValue }
     var lastBuild: JSON? { state["lastBuild"].truthyValue }
     func stepStatus(_ step: String) -> String { state["steps"]?[step]?["status"]?.string ?? "pending" }
@@ -151,6 +155,8 @@ struct ScreenItem: Identifiable {
     var state: JSON { json["state"] ?? .emptyObject }
     var gate: JSON? { state["gate"].truthyValue }
     var alternates: [JSON] { json["alternates"].items }
+    /// 以前用过的截图（新的在前）
+    var history: [JSON] { json["history"].items }
     var plan: JSON? { json["plan"].truthyValue }
     var title: String { plan?["title"]?.jsString ?? id }
     var warnings: [String] { (state["imageWarnings"].items + (gate?["warnings"].items ?? [])).map(\.jsString) }

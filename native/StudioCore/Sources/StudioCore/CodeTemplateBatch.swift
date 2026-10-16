@@ -254,6 +254,8 @@ extension Pipeline {
                 build["pdfFonts"] = draft["lastBuild"]?["pdfFonts"].or(.emptyObject).merging(["code": fonts.summary]) ?? ["code": fonts.summary]
                 let oldWarnings = draft["lastBuild"]?["warnings"].items.filter { !$0.jsString.contains("代码 PDF 字体不对") } ?? []
                 build["warnings"] = .array(oldWarnings + result["warnings"].items)
+                // 代码文档是软件自己换的，更新指纹，免得下次误以为是在软件外改的
+                if build["bundleHashes"].isTruthy { build["bundleHashes"] = refreshBundleHashes(build, dir, draft["request"]?["softwareName"]?.jsString ?? "", files: ["\(codeName).docx", txtName]) }
                 draft["lastBuild"] = build
                 draft["codeTemplateUpdatedAt"] = .string(at)
                 draft["warnings"] = .array(draft["warnings"].items.filter { warning in

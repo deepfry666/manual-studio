@@ -76,7 +76,19 @@ struct ProjectDetailView: View {
             if let lastError = data.state["lastError"]?.string, !running {
                 Banner(.error, "需要处理", message: lastError)
             }
-            if let step = waitingStep, !running {
+            if waitingStep == "build", !running {
+                // 交付包在软件外被改过（比如 WPS 里手改）：问清楚再覆盖
+                Banner(.warning, "交付包里有文件在软件外改过", message: data.stepMessage("build")) {
+                    Button("保留我的修改") {
+                        Task { await model.perform("已保留，这次没有更新交付包") { _ = try await model.core?.pipeline.resolveExternalEdits(dir, overwrite: false) }; refresh() }
+                    }
+                    .buttonStyle(.glass)
+                    Button("覆盖并更新") {
+                        Task { await model.perform("已开始更新，手改的文件另存在项目的 archive 文件夹") { _ = try await model.core?.pipeline.resolveExternalEdits(dir, overwrite: true) } }
+                    }
+                    .buttonStyle(.glassProminent)
+                }
+            } else if let step = waitingStep, !running {
                 Banner(.warning, step == "plan" ? "界面规划已生成，请在「规划」里检查，确认后继续生图" : data.stepMessage(step) ?? "「\(UI_STEP_LABELS[step] ?? step)」等待确认") {
                     if step == "plan" {
                         Button("确认规划，继续") {

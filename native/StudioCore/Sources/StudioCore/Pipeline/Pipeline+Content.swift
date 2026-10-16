@@ -123,6 +123,17 @@ extension Pipeline {
         content["screenCountReason"] = featureMap["coverageReason"].truthyValue ?? existing?["screenCountReason"]
         content["featureTier"] = 300
         content["imageRoute"] = regenerated || !(existing?["imageRoute"].isTruthy ?? false) ? "image-gateway" : existing!["imageRoute"]!
+        // 被大模型改写掉的旧文字记进历史，可以在文案页找回
+        var replaced: [ContentVersion] = []
+        let previousOverview = existingOverviewValue.text
+        if !previousOverview.isEmpty, overview != previousOverview { replaced.append(ContentVersion(target: "overview", text: previousOverview, source: "AI 重写前")) }
+        for (id, fresh) in written {
+            let previousText = existingById[id]?["text"].text ?? ""
+            if !previousText.isEmpty, fresh["text"].text.jsTrimmed != previousText.jsTrimmed {
+                replaced.append(ContentVersion(target: id, title: existingById[id]?["title"].text, text: previousText, source: "AI 重写前"))
+            }
+        }
+        recordContentHistory(dir, replaced)
         content["cover"] = (existing?["cover"].or(.emptyObject) ?? .emptyObject).merging(.obj(["overview": .string(overview)]))
         content["screens"] = .array(planScreens.enumerated().map { index, screen in
             let id = screen["id"]?.jsString ?? ""
@@ -253,6 +264,18 @@ extension Pipeline {
             throw StudioError("现有交付包里有代码文档，但这个项目没有代码来源，重建后新交付包将不含代码文档（旧交付包会先归档）。请在「交付」里点「改用总设置的代码来源」或「确认不含代码文档」后再继续。")
         }
         if !codePath.isEmpty, !FS.exists(codePath) { throw StudioError("代码来源不存在：\(codePath)（在「设置 → 代码来源」里重新选择）") }
+        // 交付包里的 Word / TXT 在软件外改过（比如在 WPS 里手改）：先停下来问，不悄悄覆盖
+        let edited = externallyEditedFiles(dir, state)
+        if !edited.isEmpty {
+            guard state["overwriteExternalEdits"].isTruthy else {
+                return StepOutcome(status: "review", message: "交付包里的 \(edited.joined(separator: "、")) 在上次生成后被改过（可能是在 WPS 里手改的）。继续更新会用软件里的内容覆盖它们。")
+            }
+            // 确认覆盖：手改过的文件另存一份，不参与「旧交付包只留最近 3 份」的清理
+            let keep = Path.join(paths.archive, "\(name)-手改保留-\(timestampSlug())")
+            try FS.mkdirp(keep)
+            for file in edited { try FS.copy(Path.join(paths.bundle(name), file), Path.join(keep, file)) }
+            try await log(dir, "已把在软件外改过的文件另存到归档：\(Path.basename(keep))")
+        }
         let fontPlan = resolveFontPlan(settings.pdf)
         content["softwareName"] = .string(name)
         content["compileDate"] = request["compileDate"].truthyValue ?? .string(contentDateChinese(contentDateOf(state)))
@@ -295,8 +318,10 @@ extension Pipeline {
             try? await self.log(dir, message)
         }
         let at = isoNow()
+        let hashes = bundleHashes(dir, name)
         try await update(dir) { draft in
-            draft["lastBuild"] = JSON.obj(["at": .string(at)]).merging(result)
+            draft["lastBuild"] = JSON.obj(["at": .string(at), "bundleHashes": hashes]).merging(result)
+            draft["overwriteExternalEdits"] = nil
             // 记下这次用的代码来源：以后改总设置，已完成的项目不受影响
             draft["request"]?["codeSource"] = codeSource ?? .null
             draft["request"]?["codeSourceLocked"] = true

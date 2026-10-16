@@ -344,6 +344,7 @@ public final class StudioCore: @unchecked Sendable {
                 "prompt": .string(FS.readTextIfExists(paths.promptFile(id)) ?? ""),
                 "state": state["screens"]?[id] ?? .emptyObject,
                 "alternates": .array(listAlternates(dir, id)),
+                "history": .array(screenHistory(dir, id)),
                 "plan": (plan ?? nil)?["screens"].items.first { $0["id"]?.string == id } ?? .null,
             ]))
         }
@@ -356,6 +357,8 @@ public final class StudioCore: @unchecked Sendable {
             "dir": .string(dir), "state": state, "plan": (plan ?? nil) ?? .null, "content": content ?? .null, "screens": .array(screens),
             "bundleDir": .string(bundleDir), "bundleFiles": JSON(bundleFiles), "running": .bool(pipeline.isRunning(dir)), "progress": pipeline.getProgress(dir) ?? .null,
             "codeSource": .obj(["source": code.source ?? .null, "locked": .bool(code.locked), "global": settings.codeSource.path.isEmpty ? .null : settings.codeSource.json]),
+            "contentHistory": .array(contentHistory(dir)),
+            "externalEdits": JSON(externallyEditedFiles(dir, state)),
         ])
     }
 

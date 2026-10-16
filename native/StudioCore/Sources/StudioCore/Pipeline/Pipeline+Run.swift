@@ -239,6 +239,27 @@ extension Pipeline {
         if isRunning(dir) { throw StudioError("项目正在运行，先停止再修改") }
     }
 
+    /// 交付包里的文件在软件外被改过时：overwrite 为 true 用软件里的内容重新生成（手改的文件另存一份，不会被清理），
+    /// 为 false 保留手改的交付包，这次不更新（以后再更新时还会再问）。
+    @discardableResult
+    public func resolveExternalEdits(_ dir: String, overwrite: Bool) async throws -> Task<RunResult, Never>? {
+        try assertIdle(dir)
+        if overwrite {
+            try await update(dir) { state in
+                state["overwriteExternalEdits"] = true
+                state.mergeChild("steps", "build", ["status": "pending"])
+            }
+            return start(dir, RunOptions(from: "build", force: ["build"]))
+        }
+        try await update(dir) { state in
+            state.mergeChild("steps", "build", ["status": "done", "inputHash": .null, "message": .null])
+            let allDone = PIPELINE_STEPS.allSatisfy { ["done", "skipped"].contains(state["steps"]?[$0]?["status"]?.string ?? "") }
+            state["status"] = .string(allDone ? "done" : "idle")
+            appendLog(&state, "保留了在软件外改过的交付包，这次没有更新")
+        }
+        return nil
+    }
+
     public func confirmPlan(_ dir: String) async throws -> Task<RunResult, Never> {
         try await update(dir) { state in
             state.mergeChild("steps", "plan", ["status": "done"])
@@ -280,28 +301,56 @@ extension Pipeline {
         return start(dir, RunOptions(from: "images", forceScreens: [id]))
     }
 
-    public func useAlternate(_ dir: String, _ id: String, _ file: String) async throws {
+    /// 换回以前用过的截图（来自归档）。当前的图同样先归档，所以还能再换回来。
+    public func restoreScreen(_ dir: String, _ id: String, _ file: String) async throws {
         try assertScreenId(id)
         try assertIdle(dir)
+        guard screenHistory(dir, id).contains(where: { $0["file"]?.string == file }) else { throw StudioError("找不到这张旧截图") }
+        let sha = try await replaceScreenImage(dir, id, with: file, log: "\(id) 换回了以前的截图")
+        let name = Path.basename(file)
+        try await updateRecord(dir) { record in
+            let at = isoNow()
+            record["screens"]?[id] = .obj(["source": "restored", "restoredFrom": .string(name), "imageSha256": .string(sha), "generatedAt": .string(at)])
+            record.append("history", .obj(["at": .string(at), "event": "screen-restored", "screenId": .string(id), "file": .string(name)]))
+        }
+        try await markDirty(dir, ["gate", "content", "receipt", "build"])
+    }
+
+    /// 用另一张图替换这一屏：当前的图先归档，换上后要重新验收，说明按新图重写（人工改过的除外）
+    func replaceScreenImage(_ dir: String, _ id: String, with file: String, log message: String) async throws -> String {
         let paths = projectPaths(dir)
-        guard listAlternates(dir, id).contains(where: { $0["file"]?.string == file }) else { throw StudioError("备选图不存在") }
         let target = paths.screenFile(id)
         if FS.exists(target) {
             let archiveDir = Path.join(paths.archive, "screens-\(timestampSlug())")
             try FS.mkdirp(archiveDir)
-            try FS.copy(target, Path.join(archiveDir, "\(id).png"))
+            var archived = Path.join(archiveDir, "\(id).png")
+            var index = 2
+            while FS.exists(archived) {
+                archived = Path.join(archiveDir, "\(id)-\(index).png")
+                index += 1
+            }
+            try FS.copy(target, archived)
         }
-        try FS.copy(file, target)
-        FS.remove(file)
+        try FS.writeAtomic(target, FS.read(file))
         let sha = try sha256File(target)
         let at = isoNow()
         try await update(dir) { state in
             var current = state["screens"]?[id] ?? .emptyObject
             current = current.merging(.obj(["imageSha": .string(sha), "gate": .null, "generatedAt": .string(at), "fromAlternate": true, "contentStale": true]))
             current["imagePromptHash"] = current["promptHash"]
+            current["requestedChange"] = nil
             state["screens"]?[id] = current
-            appendLog(&state, "\(id) 已换成备选图")
+            appendLog(&state, message)
         }
+        return sha
+    }
+
+    public func useAlternate(_ dir: String, _ id: String, _ file: String) async throws {
+        try assertScreenId(id)
+        try assertIdle(dir)
+        guard listAlternates(dir, id).contains(where: { $0["file"]?.string == file }) else { throw StudioError("备选图不存在") }
+        let sha = try await replaceScreenImage(dir, id, with: file, log: "\(id) 已换成备选图")
+        FS.remove(file)
         let parts = Path.basename(file, ".png").components(separatedBy: "-")
         let providerId = parts.count > 6 ? parts[6...].joined(separator: "-") : ""
         let alternateName = Path.basename(file)
@@ -343,6 +392,15 @@ extension Pipeline {
         try assertIdle(dir)
         let paths = projectPaths(dir)
         guard var content = try FS.readJSON(paths.content) else { throw StudioError("还没有文案") }
+        // 改之前的文字先记进历史；连续自动保存时同一处 3 分钟内只记一份
+        var versions: [ContentVersion] = []
+        let oldOverview = content["cover"]?["overview"].text ?? ""
+        if let overview, overview != oldOverview { versions.append(ContentVersion(target: "overview", text: oldOverview, source: "修改前")) }
+        for patch in patches {
+            guard let id = patch["id"]?.string, let old = content["screens"].items.first(where: { $0["id"]?.string == id }) else { continue }
+            if let text = patch["text"]?.string, text != old["text"].text { versions.append(ContentVersion(target: id, title: old["title"].text, text: old["text"].text, source: "修改前")) }
+        }
+        recordContentHistory(dir, versions, coalesce: true)
         if let overview { content["cover"] = content["cover"].or(.emptyObject).merging(.obj(["overview": .string(overview)])) }
         var screens = content["screens"].items
         var editedIds: [String] = []
@@ -478,6 +536,11 @@ extension Pipeline {
             let at = isoNow()
             try await self.update(dir) { draft in
                 if var lastBuild = draft["lastBuild"].truthyValue {
+                    // 重排指南 Word 是软件自己改的，更新指纹，免得下次误以为是在软件外改的
+                    if result["guideLayoutRepaired"].isTruthy {
+                        let name = draft["request"]?["softwareName"]?.jsString ?? ""
+                        lastBuild["bundleHashes"] = refreshBundleHashes(lastBuild, dir, name, files: ["\(name)指南.docx"])
+                    }
                     lastBuild["pdfFonts"] = lastBuild["pdfFonts"].or(.emptyObject).merging(result["pdfFonts"])
                     lastBuild["pdfPages"] = result["pdfPages"]
                     lastBuild["codePdfPages"] = result["codePdfPages"]
