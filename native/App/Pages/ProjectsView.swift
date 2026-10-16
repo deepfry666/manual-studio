@@ -114,6 +114,7 @@ struct ProjectsView: View {
         .onChange(of: model.devSelection) { _, next in if let next { selection = next; checkMode = next.count > 1 } }
         // 搜索、筛选后看不见的项目不再算选中，批量操作只作用于列表里看得到的（和访达一样）
         .onChange(of: selection.isEmpty) { _, empty in if empty { checkMode = false } }
+        .onChange(of: rows.map(\.dir), initial: true) { _, order in model.navigationOrder = order }
         .onChange(of: rows.map(\.dir)) { _, visible in
             let shown = Set(visible)
             if !selection.isSubset(of: shown) { selection.formIntersection(shown) }

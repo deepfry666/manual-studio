@@ -37,7 +37,7 @@ final class DevControl {
         case "settingsTab": model.settingsTab = value
         case "open": model.openProject(value)
         case "back": model.projectPath = []
-        case "projectTab": model.devProjectTab = ProjectTab(rawValue: value)
+        case "projectTab": model.devProjectTab = ProjectTab(name: value)
         case "feedback": model.devFeedbackOpen = value == "open"
         case "newMode": model.devNewMode = value
         case "select": model.devSelection = value == "none" ? [] : Set(value.split(separator: "|").map(String.init))

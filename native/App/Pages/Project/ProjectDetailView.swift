@@ -2,8 +2,13 @@ import StudioCore
 import SwiftUI
 
 enum ProjectTab: String, CaseIterable, Identifiable {
-    case overview, plan, screens, content, delivery
+    case overview, plan, editor, delivery
     var id: String { rawValue }
+
+    /// 旧的「截图」「文案」两页合并成了「编辑」
+    init?(name: String) {
+        if ["screens", "content"].contains(name) { self = .editor } else if let tab = ProjectTab(rawValue: name) { self = tab } else { return nil }
+    }
 }
 
 struct ProjectDetailView: View {
@@ -45,8 +50,23 @@ struct ProjectDetailView: View {
         }
     }
 
+    /// 没选过时沿用上一个项目停留的页面（逐个检查时翻到下一个项目还在同一页），否则有截图就进编辑页
     var activeTab: ProjectTab {
-        tab ?? ((data?.screens.contains { $0.file != nil } ?? false) ? .screens : .overview)
+        tab ?? model.lastProjectTab ?? ((data?.screens.contains { $0.file != nil } ?? false) ? .editor : .overview)
+    }
+
+    /// 历史项目列表当前顺序里的上一个 / 下一个（跟着列表的搜索和筛选）
+    func neighbor(_ step: Int) -> String? {
+        let order = model.navigationOrder
+        guard let index = order.firstIndex(of: dir) else { return nil }
+        let next = index + step
+        return order.indices.contains(next) ? order[next] : nil
+    }
+
+    func go(_ step: Int) {
+        guard let target = neighbor(step) else { return }
+        model.lastProjectTab = activeTab
+        model.projectPath = [target]
     }
 
     @ViewBuilder
@@ -96,7 +116,7 @@ struct ProjectDetailView: View {
                         }
                         .buttonStyle(.glassProminent)
                     } else {
-                        Button("去确认截图") { tab = .screens }
+                        Button("去确认截图") { tab = .editor }
                             .buttonStyle(.glass)
                     }
                 }
@@ -107,22 +127,33 @@ struct ProjectDetailView: View {
             switch activeTab {
             case .overview: OverviewTab(data: data, running: running, onChanged: refresh)
             case .plan: PlanTab(data: data, running: running, onChanged: refresh)
-            case .screens: ScreensTab(data: data, running: running, onChanged: refresh)
-            case .content: ContentTab(data: data, running: running, onChanged: refresh)
+            case .editor: EditorTab(data: data, running: running, onChanged: refresh)
             case .delivery: DeliveryTab(data: data, running: running, onChanged: refresh)
             }
         }
         .toolbar {
             ToolbarItem(placement: .principal) {
-                Picker("", selection: Binding(get: { activeTab }, set: { tab = $0 })) {
+                Picker("", selection: Binding(get: { activeTab }, set: { tab = $0; model.lastProjectTab = $0 })) {
                     Text("概览").tag(ProjectTab.overview)
                     Text("规划").tag(ProjectTab.plan)
-                    Text(data.screens.isEmpty ? "截图" : "截图 \(data.screens.count)").tag(ProjectTab.screens)
-                    Text("文案").tag(ProjectTab.content)
+                    Text(data.screens.isEmpty ? "编辑" : "编辑 \(data.screens.count) 屏").tag(ProjectTab.editor)
                     Text("交付").tag(ProjectTab.delivery)
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
+            }
+            ToolbarItemGroup(placement: .navigation) {
+                // 逐个检查：不用回列表就能翻到上一个 / 下一个项目
+                ControlGroup {
+                    Button { go(-1) } label: { Label("上一个项目", systemImage: "chevron.up") }
+                        .keyboardShortcut(.upArrow, modifiers: [.command, .option])
+                        .help("上一个项目（⌥⌘↑）")
+                        .disabled(neighbor(-1) == nil)
+                    Button { go(1) } label: { Label("下一个项目", systemImage: "chevron.down") }
+                        .keyboardShortcut(.downArrow, modifiers: [.command, .option])
+                        .help("下一个项目（⌥⌘↓）")
+                        .disabled(neighbor(1) == nil)
+                }
             }
             ToolbarItemGroup(placement: .primaryAction) {
                 if !readOnly {
@@ -157,6 +188,8 @@ struct ProjectDetailView: View {
                             .labelStyle(.titleAndIcon)
                     }
                     .buttonStyle(.glassProminent)
+                    .keyboardShortcut("r")
+                    .help("\(data.status == "done" ? "检查并更新" : "继续运行")（⌘R）")
                 }
             }
         }

@@ -91,4 +91,28 @@ struct HistoryTests {
         #expect(externallyEditedFiles(dir, after).isEmpty)
         #expect(after["overwriteExternalEdits"] == nil)
     }
+
+    @Test("编辑页：设计说明直接改并留历史；单屏「改图」不经过意见清单也能执行并核对", .timeLimit(.minutes(2)))
+    func editorActions() async throws {
+        let ctx = try await CoreContext(relayBehavior: { _, _ in RelayPlan(delayMs: 40) })
+        defer { FS.remove(ctx.root) }
+        let dir = try await ctx.create("编辑页 V1.0", screenCount: 2, extra: ["wantDesign": true])
+        #expect(await ctx.run(dir).status == "done")
+        let sections = try readJSONFile(projectPaths(dir).content)["design"]?["sections"].items ?? []
+        #expect(sections.count == 5)
+        var edited = sections
+        edited[0]["text"] = .string("我改过的处理流程说明。" + (sections[0]["text"]?.string ?? ""))
+        try await ctx.core.pipeline.saveContent(dir, overview: nil, screens: [], design: edited)
+        let saved = try readJSONFile(projectPaths(dir).content)["design"]?["sections"].items ?? []
+        #expect(saved[0]["text"]?.string?.hasPrefix("我改过的处理流程说明。") == true)
+        #expect(contentHistory(dir, target: "design-1").first?["text"] == sections[0]["text"])
+        #expect(try ctx.core.projectStore.read(dir)?["designEdited"] == true)
+        // 编辑页的「改图」：单个动作、不带意见编号
+        let before = ctx.relay.submits.count
+        _ = try await ctx.core.pipeline.applyFeedback(dir, actions: [["type": "image", "target": "screen-02", "targetLabel": "图2", "instruction": "底部按钮改成绿色", "items": []]])
+        #expect(await ctx.run(dir).status == "done")
+        #expect(ctx.relay.submits.count == before + 1)
+        #expect(try FS.readText(Path.join(dir, "prompts", "screen-02.md")).contains("底部按钮改成绿色"))
+        #expect(ctx.llm.calls.current.contains { $0.step == "gate" && ($0.body["messages"]?[1]?["content"]?[0]?["text"]?.string ?? "").contains("修改意见：底部按钮改成绿色") })
+    }
 }

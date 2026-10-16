@@ -72,6 +72,10 @@ final class AppModel {
     // 导航
     var section: SidebarItem? = .projects
     var projectPath: [String] = []
+    /// 历史项目列表当前显示的顺序（项目页的上一个 / 下一个用）
+    var navigationOrder: [String] = []
+    /// 上一个项目停留的页面
+    var lastProjectTab: ProjectTab?
     var modelsTab = "providers"
     var settingsTab = "general"
 

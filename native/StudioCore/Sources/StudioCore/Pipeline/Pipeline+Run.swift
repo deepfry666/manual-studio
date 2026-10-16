@@ -388,7 +388,8 @@ extension Pipeline {
     }
 
     /// screens：[{ id, title?, text? }]
-    public func saveContent(_ dir: String, overview: String?, screens patches: [JSON]) async throws {
+    /// design：整章设计说明（[{title, text}]），nil 表示不改
+    public func saveContent(_ dir: String, overview: String?, screens patches: [JSON], design: [JSON]? = nil) async throws {
         try assertIdle(dir)
         let paths = projectPaths(dir)
         guard var content = try FS.readJSON(paths.content) else { throw StudioError("还没有文案") }
@@ -400,7 +401,16 @@ extension Pipeline {
             guard let id = patch["id"]?.string, let old = content["screens"].items.first(where: { $0["id"]?.string == id }) else { continue }
             if let text = patch["text"]?.string, text != old["text"].text { versions.append(ContentVersion(target: id, title: old["title"].text, text: old["text"].text, source: "修改前")) }
         }
+        let oldSections = content["design"]?["sections"].items ?? []
+        if let design {
+            for (index, section) in design.enumerated() where index < oldSections.count && section["text"].text != oldSections[index]["text"].text {
+                versions.append(ContentVersion(target: "design-\(index + 1)", title: oldSections[index]["title"].text, text: oldSections[index]["text"].text, source: "修改前"))
+            }
+        }
         recordContentHistory(dir, versions, coalesce: true)
+        if let design {
+            content["design"] = .obj(["sections": .array(design.map { .obj(["title": .string($0["title"].text.jsTrimmed), "text": .string($0["text"].text)]) })])
+        }
         if let overview { content["cover"] = content["cover"].or(.emptyObject).merging(.obj(["overview": .string(overview)])) }
         var screens = content["screens"].items
         var editedIds: [String] = []
@@ -421,6 +431,7 @@ extension Pipeline {
             for id in edited { state.mergeChild("screens", id, ["textEdited": true, "contentStale": false]) }
             if !edited.isEmpty { state["warnings"] = .array(state["warnings"].items.filter { !($0.string ?? "").hasPrefix("截图已更换") }) }
             if overview != nil { state["overviewEdited"] = true }
+            if design != nil { state["designEdited"] = true }
         }
         try await markDirty(dir, ["receipt", "build"])
     }

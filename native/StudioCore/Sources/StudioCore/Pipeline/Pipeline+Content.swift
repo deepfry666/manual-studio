@@ -207,6 +207,11 @@ extension Pipeline {
             temperature: 0.6,
             maxTokens: 8000
         ))
+        // 被大模型改写掉的旧设计说明记进历史
+        let oldSections = content["design"]?["sections"].items ?? []
+        recordContentHistory(dir, oldSections.enumerated().map { index, section in
+            ContentVersion(target: "design-\(index + 1)", title: section["title"].text, text: section["text"].text, source: "AI 重写前")
+        })
         content["designContentDate"] = .string(contentDateOf(state))
         content["designEarliestDate"] = JSON.maybe(explicitEarliestDate(state))
         content["design"] = .obj(["sections": .array(result["sections"].items.map { .obj(["title": .string($0["title"]?.jsString.jsTrimmed ?? ""), "text": .string($0["text"]?.jsString.jsTrimmed ?? "")]) })])

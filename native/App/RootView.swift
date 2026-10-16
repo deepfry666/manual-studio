@@ -56,7 +56,8 @@ struct MainSplitView: View {
                     NavigationStack(path: $model.projectPath) {
                         ProjectsView()
                             .navigationDestination(for: String.self) { dir in
-                                ProjectDetailView(dir: dir)
+                                // 按项目区分视图：翻到上一个 / 下一个项目时重新加载，不沿用上一个项目的内容
+                                ProjectDetailView(dir: dir).id(dir)
                             }
                     }
                 case .models:
