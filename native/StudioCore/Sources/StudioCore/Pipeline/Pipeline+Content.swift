@@ -20,7 +20,7 @@ extension Pipeline {
             existingById[id] = screen
         }
         let planScreens = plan["screens"].items
-        let planHash = hashObject(.obj(["profile": plan["profile"] ?? .null, "titles": .array(planScreens.map { $0["title"] ?? .null })]))
+        let planHash = hashObject(.obj(["contentDate": state["request"]?["contentDate"], "profile": plan["profile"] ?? .null, "titles": .array(planScreens.map { $0["title"] ?? .null })]))
         let neutral = !softwareNameNamesPlatform(name)
         var autoInstructions: [String: String] = [:]
         var inventories: [String: String] = [:]
@@ -34,6 +34,7 @@ extension Pipeline {
             let hash = hashObject(.obj([
                 "title": screen["title"], "contract": screen["textContract"], "mustShow": screen["mustShow"], "sampleData": screen["sampleData"],
                 "inventory": inventories[id].map(JSON.string) ?? .null,
+                "contentDate": state["request"]?["contentDate"],
             ]))
             contentHashes.append((id, hash))
             let old = existingById[id]
@@ -42,7 +43,7 @@ extension Pipeline {
             let unchanged = shot["contentHash"].isTruthy ? shot["contentHash"]?.string == hash : state["origin"]?.string == "imported"
             var keep = old?["text"].isTruthy == true && !forced && (shot["textEdited"].isTruthy || (unchanged && !shot["contentStale"].isTruthy))
             // 软件名没指明系统，旧说明里却有 iPhone、安卓 等字样：只改掉这些字样，其余保持
-            let platformHits = keep && neutral ? findPlatformTerms([old?["text"].text ?? ""]) : []
+            let platformHits = keep && neutral ? findPlatformTerms([old?["title"].text ?? "", old?["caption"].text ?? "", old?["text"].text ?? ""]) : []
             if !platformHits.isEmpty {
                 keep = false
                 autoInstructions[id] = platformFixInstruction(platformHits)
@@ -75,7 +76,7 @@ extension Pipeline {
                 setProgress(dir, .obj(["detail": .string(targets.isEmpty ? "撰写封面介绍" : "撰写说明：第 \(min(targets.count, index * 4 + 1))–\(min(targets.count, index * 4 + chunk.count)) 屏（共 \(targets.count) 屏）")]))
                 let result = try await callLlm("content", dir, ChatJsonRequest(
                     system: CONTENT_SYSTEM.replacingOccurrences(of: "{floor}", with: String(floor)),
-                    user: contentUserPrompt(softwareName: softwareName(state), profile: plan["profile"], screens: chunk, inventories: inventories, needOverview: wantsOverview, existingOverview: overview, floor: floor, instructions: instructions, currentTexts: currentTexts) + platformNeutralRule(softwareName(state)),
+                    user: contentUserPrompt(softwareName: softwareName(state), profile: plan["profile"], screens: chunk, inventories: inventories, needOverview: wantsOverview, existingOverview: overview, floor: floor, instructions: instructions, currentTexts: currentTexts) + platformNeutralRule(softwareName(state)) + contentDateRule(state),
                     schema: CONTENT_SCHEMA,
                     check: { contentCheck($0, screens: chunk, needOverview: wantsOverview, floor: floor) + platformProblems(name, "封面介绍或功能说明", [$0["overview"].text] + $0["screens"].items.flatMap { [$0["title"].text, $0["text"].text] }) },
                     temperature: 0.7,
@@ -176,19 +177,20 @@ extension Pipeline {
         let designName = softwareName(state)
         let designHits = softwareNameNamesPlatform(designName) ? [] : findPlatformTerms(content["design"]?["sections"].items.flatMap { [$0["title"].text, $0["text"].text] } ?? [])
         let designInstruction = (ctx.designInstruction ?? "").isEmpty && !designHits.isEmpty ? platformFixInstruction(designHits) : ctx.designInstruction
-        if !(content["design"]?["sections"]?.array?.isEmpty ?? true), !ctx.forceDesign, (designInstruction ?? "").isEmpty { return StepOutcome(status: "done") }
+        if !(content["design"]?["sections"]?.array?.isEmpty ?? true), (state["request"]?["contentDate"].isTruthy != true || content["designContentDate"]?.string == contentDateOf(state)), !ctx.forceDesign, (designInstruction ?? "").isEmpty { return StepOutcome(status: "done") }
         guard let plan = try readPlan(dir) else { throw StudioError("还没有界面规划") }
         try await log(dir, "正在撰写设计说明…")
         let name = softwareName(state)
         let current = (content["design"]?["sections"].items ?? []).map { "\(templateText($0["title"]))\n\(templateText($0["text"]))" }.joined(separator: "\n\n")
         let result = try await callLlm("design", dir, ChatJsonRequest(
             system: DESIGN_SYSTEM,
-            user: designUserPrompt(softwareName: softwareName(state), profile: plan["profile"], features: plan["featureMap"]?["features"].items ?? [], screens: plan["screens"].items, instruction: designInstruction, current: current) + platformNeutralRule(softwareName(state)),
+            user: designUserPrompt(softwareName: softwareName(state), profile: plan["profile"], features: plan["featureMap"]?["features"].items ?? [], screens: plan["screens"].items, instruction: designInstruction, current: current) + platformNeutralRule(softwareName(state)) + contentDateRule(state),
             schema: DESIGN_SCHEMA,
             check: { designCheck($0) + platformProblems(name, "设计说明", $0["sections"].items.flatMap { [$0["title"].text, $0["text"].text] }) },
             temperature: 0.6,
             maxTokens: 8000
         ))
+        content["designContentDate"] = .string(contentDateOf(state))
         content["design"] = .obj(["sections": .array(result["sections"].items.map { .obj(["title": .string($0["title"]?.jsString.jsTrimmed ?? ""), "text": .string($0["text"]?.jsString.jsTrimmed ?? "")]) })])
         try FS.writeJSONAtomic(paths.content, content)
         return StepOutcome(status: "done")
@@ -246,7 +248,9 @@ extension Pipeline {
         if !codePath.isEmpty, !FS.exists(codePath) { throw StudioError("代码来源不存在：\(codePath)（在「设置 → 代码来源」里重新选择）") }
         let fontPlan = resolveFontPlan(settings.pdf)
         content["softwareName"] = .string(name)
-        content["compileDate"] = request["compileDate"].truthyValue ?? .string(chineseDate())
+        content["compileDate"] = request["compileDate"].truthyValue ?? .string(contentDateChinese(contentDateOf(state)))
+        content["contentDate"] = .string(contentDateOf(state))
+        content["compileDateOverride"] = .string(request["compileDate"].text)
         content["screens"] = .array(content["screens"].items.enumerated().map { index, screen in screen.merging(.obj(["image": .string("screens/\(screenId(index)).png")])) })
         var txtFields = settings.txtFields
         for (key, value) in request["txtFields"].fields { txtFields[key] = value.jsString }
@@ -335,6 +339,7 @@ extension Pipeline {
             for (key, value) in request["txtFields"].fields { txt[key] = value }
             return hashObject(.obj([
                 "content": content ?? .null, "shas": .object(shas), "code": codeSourceFor(state, settings).source ?? .null,
+                "contentDate": request["contentDate"], "compileDate": request["contentDate"].isTruthy ? request["compileDate"] : nil,
                 "txt": .object(txt), "name": request["softwareName"], "bundle": .bool(FS.exists(paths.bundle(softwareName(state)))),
             ]))
         default:

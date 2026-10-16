@@ -15,8 +15,9 @@ public struct CodeCollection: Sendable {
     /// 代码正文指纹：写进生成记录，可以核对交付包里的代码文档用的是哪一版代码
     public let sha256: String
     public let warnings: [String]
+    public let wordTemplate: CodeWordTemplate?
     /// 现有代码文档格式（新宋体 9pt、A4）实测每页约 45 行，只作页数估算
-    public var estimatedPages: Int { Int((Double(lineCount) / 45).rounded(.up)) }
+    public var estimatedPages: Int { wordTemplate?.plannedPages ?? Int((Double(lineCount) / 45).rounded(.up)) }
 }
 
 /// 和 JS 的 `a.localeCompare(b, "en")` 一样的排序。
@@ -32,6 +33,11 @@ public func collectCodeSource(path sourcePath: String, extensions sourceExtensio
     let exclude = Set(excludeDirs)
     var isDirectory: ObjCBool = false
     guard FileManager.default.fileExists(atPath: root, isDirectory: &isDirectory) else { throw StudioError("代码来源不存在：\(root)") }
+    if !isDirectory.boolValue, Path.extname(root).lowercased() == ".docx" {
+        let template = try CodeWordTemplate(data: FS.read(root))
+        let body = template.lines.joined(separator: "\n") + "\n"
+        return CodeCollection(root: root, extensions: [".java"], files: [Path.basename(root)], lineCount: template.lines.count, nonEmptyLines: template.lines.filter { !$0.jsTrimmed.isEmpty }.count, bytes: template.data.count, body: body, sha256: sha256Hex(body), warnings: [], wordTemplate: template)
+    }
     let rootIsFile = !isDirectory.boolValue
     var files: [String] = []
     var warnings: [String] = []
@@ -86,7 +92,8 @@ public func collectCodeSource(path sourcePath: String, extensions sourceExtensio
         bytes: bytes,
         body: body,
         sha256: sha256Hex(body),
-        warnings: warnings
+        warnings: warnings,
+        wordTemplate: nil
     )
 }
 

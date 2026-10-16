@@ -68,7 +68,7 @@ struct OverviewTab: View {
                     .frame(minWidth: 160, idealWidth: 300, maxWidth: 300)
             }
             .disabled(disabled)
-            SettingsRow(label: "平台") {
+            SettingsRow(label: "截图样式", hint: "文档省略运行平台") {
                 Picker("", selection: Binding(get: { request["platform"].text }, set: { update(["platform": .string($0)]) })) {
                     Text("用设置里的默认平台").tag("")
                     ForEach(PLATFORMS, id: \.value) { Text($0.label).tag($0.value) }
@@ -93,8 +93,13 @@ struct OverviewTab: View {
                 TokenEditor(tokens: Binding(get: { request["extraBrandTokens"].items.map(\.jsString) }, set: { update(["extraBrandTokens": JSON($0)]) }))
             }
             .disabled(disabled)
-            SettingsRow(label: "编制时间", hint: "留空用生成当天") {
-                CommitTextField(placeholder: "例如 2026年10月3日", value: request["compileDate"].text) { update(["compileDate": .string($0)]) }
+            SettingsRow(label: "内容日期", hint: "截图和正文统一使用此日；修改后重新规划、生图及撰写") {
+                CommitTextField(placeholder: localDateKey(), value: request["contentDate"].text) { update(["contentDate": .string($0)]) }
+                    .frame(width: 200)
+            }
+            .disabled(disabled)
+            SettingsRow(label: "编制时间", hint: "留空跟随内容日期") {
+                CommitTextField(placeholder: contentDateChinese(contentDateOf(data.state)), value: request["compileDate"].text) { update(["compileDate": .string($0)]) }
                     .frame(width: 200)
             }
             .disabled(disabled)

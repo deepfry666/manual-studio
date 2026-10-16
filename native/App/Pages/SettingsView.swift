@@ -127,16 +127,23 @@ struct CodeSourceSettings: View {
         let source = model.settings.codeSource
         VStack(alignment: .leading, spacing: 18) {
             SettingsGroup(title: "代码来源", footer: "所有项目共用。项目第一次生成交付包时会记下当时的来源，之后修改不影响已完成的项目。") {
-                SettingsRow(label: "源码", info: "文件夹或单个文件。按文件路径排序后原样排版，不改写、不生成。不设置时交付包只有说明书 3 个文件。") {
+                SettingsRow(label: "源码 / Word 模板", info: "支持源码文件夹、TXT 或代码 Word（.docx）。Word 模板保留代码正文，非空代码超过3,000行；代码PDF采用固定60页打印布局，不符合要求时停止交付。") {
                     PathText(path: source.path).frame(maxWidth: 360, alignment: .trailing)
                     Button("选择…") {
                         if let picked = Panels.choosePath("选择源码文件夹或文件", at: source.path) {
-                            model.saveSettings(["codeSource": .obj(["path": .string(picked), "extensions": JSON(source.extensions)])])
+                            if Path.extname(picked).lowercased() == ".docx" {
+                                importTemplate(picked)
+                            } else {
+                                model.saveSettings(["codeSource": .obj(["path": .string(picked), "extensions": JSON(source.extensions)])])
+                            }
                         }
                     }
                     if !source.path.isEmpty {
                         Button("清除", role: .destructive) { model.saveSettings(["codeSource": .obj(["path": "", "extensions": JSON(source.extensions)])]) }.buttonStyle(.borderless)
                     }
+                }
+                SettingsRow(label: "新代码模板", info: "用户的代码模板：3,322行，其中3,229行非空代码；代码PDF正好60页。") {
+                    Button("使用新模板") { importTemplate(CodeWordTemplate.bundledPath) }
                 }
                 SettingsRow(label: "文件类型", vertical: true) {
                     TokenEditor(tokens: Binding(get: { source.extensions }, set: { model.saveSettings(["codeSource": .obj(["path": .string(source.path), "extensions": JSON($0)])]) }), suggestions: CODE_EXTENSIONS)
@@ -149,7 +156,7 @@ struct CodeSourceSettings: View {
                 SettingsGroup(title: "统计") {
                     SettingsRow(label: "文件") { Text("\(info["fileCount"]?.int ?? 0) 个") }
                     SettingsRow(label: "行数") { Text("\((info["lineCount"]?.int ?? 0).formatted()) 行") }
-                    SettingsRow(label: "代码文档", info: "按新宋体 9 号字估算，用替代字体时页数会有出入。") { Text("约 \(info["estimatedPages"]?.int ?? 0) 页") }
+                    SettingsRow(label: "代码文档", info: info["wordTemplate"].isTruthy ? "实际PDF必须正好60页，非空代码超过3,000行才交付。" : "按新宋体9磅估算，用替代字体时页数会有出入。") { Text("\(info["wordTemplate"].isTruthy ? "正好" : "约") \(info["estimatedPages"]?.int ?? 0) 页") }
                     if !info["warnings"].items.isEmpty {
                         SettingsRow(label: "提醒", hint: info["warnings"].items.map(\.jsString).joined(separator: "；"))
                     }
@@ -159,6 +166,13 @@ struct CodeSourceSettings: View {
         .task(id: "\(source.path)|\(source.extensions.joined(separator: ","))") {
             guard !source.path.isEmpty else { info = nil; return }
             info = try? await model.core?.inspectCodeSource(path: source.path, extensions: source.extensions)
+        }
+    }
+
+    private func importTemplate(_ path: String) {
+        Task {
+            await model.perform { try await model.core?.importCodeTemplate(path) }
+            await model.reloadSettings()
         }
     }
 }
@@ -235,9 +249,8 @@ struct TxtSettings: View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .top, spacing: 20) {
                 SettingsGroup(title: "开发环境") { ForEach(["devHardware", "devOs", "devTools", "language"], id: \.self) { field($0) } }
-                SettingsGroup(title: "运行环境") { ForEach(["runHardware", "runPlatform", "runSupport"], id: \.self) { field($0) } }
             }
-            Text("默认值和旧 skill 模板一致。【源程序量】按代码来源的实际行数统计；有代码来源时【编程语言】自动判断。").font(.caption).foregroundStyle(.secondary)
+            Text("TXT 不再输出运行硬件、运行平台和运行支撑环境。【源程序量】按代码来源的实际行数统计；有代码来源时【编程语言】自动判断。").font(.caption).foregroundStyle(.secondary)
         }
     }
 }

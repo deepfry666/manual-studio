@@ -11,3 +11,6 @@ native/DerivedData/
 native/dist/
 *.xcuserstate
 xcuserdata/
+
+# 根目录的临时构建与验收产物（含用户项目副本和旧版 App 备份）
+/.build/

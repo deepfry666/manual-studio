@@ -79,3 +79,21 @@ public func ensureBrandBan(_ prompt: String) -> String {
     if let range = text.range(of: BRAND_BAN_BLOCK) { text.replaceSubrange(range, with: "") }
     return "\(text.jsTrimmedEnd)\n\n\(BRAND_BAN_BLOCK)\n"
 }
+
+/// 只替换程序管理的规则块，保留用户或反馈模型追加的其他指令。
+public func ensureContentDateRule(_ prompt: String, _ state: JSON) -> String {
+    let start = "<manual-content-policy>"
+    let end = "</manual-content-policy>"
+    var clean = prompt
+    while let from = clean.range(of: start), let to = clean.range(of: end, range: from.upperBound..<clean.endIndex) {
+        clean.removeSubrange(from.lowerBound..<to.upperBound)
+    }
+    // 兼容本次开发草稿中尚未带标记的规则；品牌禁令后的反馈文字必须保留。
+    let oldMarker = "\n\n统一日期规定（优先于旧规划、示例数据和旧正文）："
+    if let from = clean.range(of: oldMarker), let to = clean.range(of: BRAND_BAN_BLOCK, range: from.upperBound..<clean.endIndex) {
+        clean.removeSubrange(from.lowerBound..<to.lowerBound)
+    }
+    let rule = start + contentDateRule(state) + platformNeutralRule(state["request"]?["softwareName"].text ?? "") + "\n" + end
+    let withoutBan = clean.replacingAll(BRAND_BAN_BLOCK, with: "").jsTrimmed
+    return ensureBrandBan(withoutBan + "\n\n" + rule)
+}

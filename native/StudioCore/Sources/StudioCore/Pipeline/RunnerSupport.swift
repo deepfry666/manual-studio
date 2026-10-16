@@ -150,3 +150,37 @@ struct StepOutcome: Sendable {
     var message: String?
     var screenCountReason: String?
 }
+
+/// 内容的统一业务日期：新项目固定为本地新建日；历史项目未设置时用当天。
+public func localDateKey(_ date: Date = Date(), timeZone: TimeZone = .current) -> String {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = timeZone
+    let c = calendar.dateComponents([.year, .month, .day], from: date)
+    return String(format: "%04d-%02d-%02d", c.year!, c.month!, c.day!)
+}
+
+public func validContentDate(_ value: String) -> Bool {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.calendar = Calendar(identifier: .gregorian)
+    formatter.dateFormat = "yyyy-MM-dd"
+    formatter.isLenient = false
+    guard let date = formatter.date(from: value) else { return false }
+    return formatter.string(from: date) == value
+}
+
+public func contentDateOf(_ state: JSON) -> String {
+    let value = state["request"]?["contentDate"].text ?? ""
+    return validContentDate(value) ? value : localDateKey()
+}
+
+public func contentDateChinese(_ value: String) -> String {
+    let parts = value.split(separator: "-").compactMap { Int($0) }
+    guard parts.count == 3 else { return chineseDate() }
+    return "\(parts[0])年\(parts[1])月\(parts[2])日"
+}
+
+public func contentDateRule(_ state: JSON) -> String {
+    let date = contentDateOf(state)
+    return "\n\n统一日期规定（优先于旧规划、示例数据和旧正文）：本项目内容基准日期为 \(date)（\(contentDateChinese(date))）。截图中的日期、示例记录、订单、报表、日历选中日、正文描述和设计说明默认都使用此日，月份和年份也与此日一致。不得自行编造更早的经营记录、软件上线时间、企业成立时间或多年使用历史；不需要日期的地方不添加日期。确需展示日期范围或预约日期时，以此日为起点合理安排，正文必须与截图实际日期一致。软件名称、版本号保持原样，不当作业务日期改写。"
+}

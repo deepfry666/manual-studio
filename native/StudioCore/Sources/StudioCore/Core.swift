@@ -368,6 +368,8 @@ public final class StudioCore: @unchecked Sendable {
         let dir = Path.join(workspace, softwareName)
         if projectStore.exists(dir) { throw StudioError("已经有「\(softwareName)」这个项目了，可以在项目列表里找到它") }
         if FS.exists(dir), inspectProject(dir) != nil { throw StudioError("工作区里已经有「\(softwareName)」这个项目，请用「导入历史项目」或换个名字") }
+        let contentDate = request["contentDate"].text.jsTrimmed
+        if !contentDate.isEmpty && !validContentDate(contentDate) { throw StudioError("内容日期请填写有效的 YYYY-MM-DD 日期") }
         try FS.mkdirp(dir)
         // 版本号自动判断；代码来源用总设置里的（第一次生成交付包时记下来）
         let versionPolicy = request["versionPolicy"]?.string == "separate-metadata" ? "separate-metadata" : detectVersion(softwareName) != nil ? "in-name" : "none"
@@ -376,6 +378,8 @@ public final class StudioCore: @unchecked Sendable {
         fields["versionPolicy"] = .string(versionPolicy)
         fields["codeSource"] = .null
         fields["workspaceDir"] = nil
+        fields["contentDate"] = .string(contentDate.isEmpty ? localDateKey() : contentDate)
+        fields["createdAt"] = request["createdAt"].truthyValue ?? .string(localDateKey())
         let state = newState(fields)
         try await projectStore.write(dir, state)
         let addedAt = isoNow()
@@ -566,7 +570,19 @@ public final class StudioCore: @unchecked Sendable {
         return .obj([
             "fileCount": .number(Double(result.fileCount)), "lineCount": .number(Double(result.lineCount)), "nonEmptyLines": .number(Double(result.nonEmptyLines)),
             "estimatedPages": .number(Double(result.estimatedPages)), "files": JSON(Array(result.files.prefix(50))), "warnings": JSON(result.warnings),
+            "wordTemplate": .bool(result.wordTemplate != nil),
         ])
+    }
+
+    /// 保存不可变的模板副本，项目锁定后不受下载目录移动或后续模板替换影响。
+    public func importCodeTemplate(_ path: String = CodeWordTemplate.bundledPath) async throws {
+        let bytes = try FS.read(path)
+        let template = try CodeWordTemplate(data: bytes)
+        let target = Path.join(dataDir, "code-templates", "\(template.sha256).docx")
+        if FS.exists(target) {
+            guard try FS.read(target) == bytes else { throw StudioError("已保存的代码模板被修改，请恢复模板副本") }
+        } else { try FS.write(target, bytes) }
+        try await updateSettings(["codeSource": ["path": .string(target), "extensions": [".java"]]])
     }
 
     /// 把交付包打成 zip，放在项目文件夹里。
@@ -606,6 +622,13 @@ public final class StudioCore: @unchecked Sendable {
 
     /// 启动时：清理一天前失败构建留下的临时文件夹，续查异步任务，恢复批量队列。
     public func start() async {
+        do {
+            let recovered = try await recoverCodeTemplateTransactions()
+            if !recovered.isEmpty { emit(.obj(["type": "project", "recovered": JSON(recovered)])) }
+        } catch {
+            emit(.obj(["type": "startup-error", "message": .string("代码模板中断恢复未完成，自动任务未启动：\(messageOf(error))")]))
+            return
+        }
         let stagingRoot = projectStore.stagingRoot
         for name in FS.list(stagingRoot) ?? [] {
             let target = Path.join(stagingRoot, name)

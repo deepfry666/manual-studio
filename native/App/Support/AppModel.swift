@@ -270,6 +270,10 @@ final class AppModel {
         let type = event["type"]?.string ?? ""
         let dir = event["projectDir"]?.string
         switch type {
+        case "startup-error":
+            // 恢复失败时不能继续修改项目，否则以后恢复旧快照会覆盖新修改。
+            phase = .failed(event["message"].text)
+            alert = AlertItem(title: "恢复未完成", message: event["message"].text)
         case "progress":
             guard let dir else { return }
             if let progress = event["progress"], !progress.isNull {

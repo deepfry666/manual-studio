@@ -49,11 +49,8 @@ let PLATFORMS: [(value: String, label: String)] = [
 
 let TXT_LABELS: [(key: String, label: String)] = [
     ("devHardware", "开发的硬件环境"),
-    ("runHardware", "运行的硬件环境"),
     ("devOs", "开发操作系统"),
     ("devTools", "开发环境 / 开发工具"),
-    ("runPlatform", "运行平台 / 操作系统"),
-    ("runSupport", "运行支撑环境 / 支持软件"),
     ("language", "编程语言"),
 ]
 

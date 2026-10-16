@@ -41,6 +41,7 @@ public func newState(_ request: JSON) -> JSON {
     fields["codeSource"] = request["codeSource"].or(.null)
     fields["txtFields"] = request["txtFields"].or(.null)
     fields["extraBrandTokens"] = request["extraBrandTokens"].or([])
+    if let date = request["contentDate"] { fields["contentDate"] = date }
     fields["compileDate"] = .string(request["compileDate"].text)
     fields["createdAt"] = request["createdAt"].or(.string(isoNow().jsSlice(0, 10)))
     var state = JSONObject()

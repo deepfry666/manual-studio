@@ -317,7 +317,7 @@ struct CompatibilityTests {
         #expect(plan?.stableStringify() == fixtures["readPlan"]!.stableStringify())
     }
 
-    @Test("Word 和 TXT：XML 和 Electron 版逐字一致")
+    @Test("指南图片改为安全尺寸，其余Word XML保持一致，TXT省略运行环境")
     func docx() throws {
         let doc = fixtures["docx"]!
         let dir = try FS.makeTempDirectory(prefix: "docx-")
@@ -330,14 +330,23 @@ struct CompatibilityTests {
         #expect(region.serialized() == doc["region"]!.serialized())
         try createCodeDocx(project: dir, software: software, body: doc["codeBody"]!.string!)
         try createGuideTxt(project: dir, software: software, overview: doc["content"]!["cover"]!["overview"]!.string!, fields: ["devOs": "macOS 26", "language": "Swift", "languageOverride": "true"], sourceLines: 123)
-        #expect(try FS.readText(Path.join(dir, software, "\(software)指南.txt")) == doc["txt"]!.string!)
+        #expect(try FS.readText(Path.join(dir, software, "\(software)指南.txt")) == doc["txt"]!.string!.components(separatedBy: "\r\n").filter { line in
+            !["【运行的硬件环境】", "【该软件的运行平台/操作系统】", "【软件运行支撑环境/支持软件】"].contains(where: line.hasPrefix)
+        }.joined(separator: "\r\n"))
         for (kind, file) in [("guide", "\(software)指南.docx"), ("code", "\(software)指南_代码-（JAVA）.docx")] {
             let zip = try ZipReader(try FS.read(Path.join(dir, software, file)))
             let expected = doc[kind]!
             #expect(zip.entries.map(\.name) == strings(expected["names"]), "\(kind) 条目顺序")
             for (name, xml) in expected.fields where name != "names" {
                 let ours = String(decoding: try zip.read(name) ?? Data(), as: UTF8.self)
-                if kind == "code" && name == "word/document.xml" {
+                if kind == "guide" && name == "word/document.xml" {
+                    // 图片几何由 GuideLayoutTests 验证；其他文字、样式和部件继续逐字对照。
+                    func withoutLayout(_ text: String) -> String {
+                        let stripped = Rx.replace(#"<(wp:extent|a:ext) cx="[0-9]+" cy="[0-9]+"/>"#, in: text, with: "<image-extent/>")
+                        return stripped.replacingAll(#"<w:tblLayout w:type="fixed"/>"#, with: "")
+                    }
+                    #expect(withoutLayout(ours) == withoutLayout(xml.string!))
+                } else if kind == "code" && name == "word/document.xml" {
                     // 代码里的控制字符：Electron 版原样写进 XML（Word 打不开），这里去掉了
                     #expect(ours == xml.string!.replacingOccurrences(of: "\u{0001}", with: ""), "\(kind) \(name)")
                 } else {

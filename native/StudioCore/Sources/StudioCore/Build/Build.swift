@@ -31,7 +31,9 @@ func buildManifest(softwareName: String, content: JSON, withPdf: Bool, withCode:
     manifest["pdfMode"] = .string(withPdf ? "complete" : "complete-no-pdf")
     manifest["codeDocument"] = .string(withCode ? "from-code-source" : "not-generated")
     manifest["createdAt"] = content["createdAt"].or(.string(isoNow().jsSlice(0, 10)))
+    if let date = content["contentDate"] { manifest["contentDate"] = date }
     manifest["builtAt"] = .string(isoNow())
+    manifest["guideLayoutVersion"] = 2
     manifest["builtBy"] = "软件指南生成器"
     manifest["artifacts"] = .object(artifacts)
     if let reason = content["screenCountReason"].truthyValue { manifest["screenCountReason"] = reason }
@@ -119,10 +121,20 @@ public func buildBundle(_ input: BuildInput, onLog: @Sendable (String) async -> 
         code = collected
         try FS.write(Path.join(staging, "tmp", "code-body.txt"), collected.body)
         await onLog("生成代码 Word（\(collected.fileCount) 个文件，\(collected.lineCount) 行）")
-        try createCodeDocx(project: staging, software: softwareName, body: collected.body)
-        if withPdf {
+        if let template = collected.wordTemplate {
+            guard withPdf else { throw StudioError("请安装 LibreOffice 以生成指南 PDF；代码模板要求完整PDF交付包，正式交付包未改动") }
+            await onLog("使用 Word 模板：\(template.nonEmptyLines) 行非空代码，正好60页打印布局")
+            pdfFonts.append(("code", try await renderCodeTemplate(template, project: staging, software: softwareName, fontPlan: input.fontPlan)))
+        } else {
+            try createCodeDocx(project: staging, software: softwareName, body: collected.body)
+        }
+        if withPdf, collected.wordTemplate == nil {
             await onLog("导出代码 PDF（字体：\(input.fontPlan?["code"]?.label ?? "新宋体")）")
             pdfFonts.append(("code", try await convertToPdfChecked(Path.join(stagingBundle, "\(softwareName)指南_代码-（JAVA）.docx"), outDir: stagingBundle, kind: "code", fontPlan: input.fontPlan)))
+        }
+        if collected.wordTemplate != nil {
+            let pages = try requireExactCodePdfPages(Path.join(stagingBundle, "\(softwareName)\(CODE_SUFFIX).pdf"))
+            await onLog("代码 PDF 实际 \(pages) 页，精确页数验收通过")
         }
     }
 
@@ -144,6 +156,9 @@ public func buildBundle(_ input: BuildInput, onLog: @Sendable (String) async -> 
     }
 
     var manifest = buildManifest(softwareName: softwareName, content: input.content, withPdf: withPdf, withCode: withCode, code: code, codeSource: input.codeSource, provenance: input.provenance)
+    if let template = code?.wordTemplate {
+        manifest["codePagination"] = .obj(["templateSha256": .string(template.sha256), "targetPages": .number(60), "nonEmptyLines": .number(Double(template.nonEmptyLines)), "pdfPages": JSON.maybe(countPdfPages(Path.join(stagingBundle, "\(softwareName)\(CODE_SUFFIX).pdf")))])
+    }
     if withPdf { manifest["pdfFonts"] = summarizeFonts(pdfFonts) }
     let regionIndex = buildRegionIndex(softwareName: softwareName, content: input.content, regionFill: regionFill, withPdf: withPdf, withCode: withCode, code: code)
 
@@ -170,42 +185,98 @@ public func buildBundle(_ input: BuildInput, onLog: @Sendable (String) async -> 
         "pdfPages": JSON.orNull(pdfPages),
         "pdfFonts": summarizeFonts(pdfFonts),
         "codeSha256": JSON.orNull(code?.sha256),
+        "codePdfPages": JSON.maybe(withCode && withPdf ? countPdfPages(Path.join(finalBundle, "\(softwareName)\(CODE_SUFFIX).pdf")) : nil),
         "warnings": JSON(warnings),
     ])
 }
 
-/// 只重新导出交付包里的 PDF（修正字体用），Word 和 TXT 不动。
-/// 新 PDF 先转到临时目录，核对后再替换；旧 PDF 移到项目的 archive 文件夹。
-public func reexportBundlePdfs(projectDir: String, softwareName: String, stagingRoot: String, fontPlan: [String: FontPlanEntry], onLog: @Sendable (String) async -> Void) async throws -> JSON {
+/// 重新导出 PDF；发现旧指南图片超宽时，先用现有内容与截图重排指南 Word。
+/// 所有转换成功后才替换；旧文件归档，写入失败时回滚已替换文件。
+public func reexportBundlePdfs(projectDir: String, softwareName: String, stagingRoot: String, fontPlan: [String: FontPlanEntry], guideOnly: Bool = false, onLog: @Sendable (String) async -> Void) async throws -> JSON {
     let paths = projectPaths(projectDir)
     let bundle = paths.bundle(softwareName)
     guard FS.exists(bundle) else { throw StudioError("还没有交付包") }
     guard await findLibreOffice() != nil else { throw StudioError("没有找到 LibreOffice") }
-    let docs = [("guide", "\(softwareName)指南.docx"), ("code", "\(softwareName)指南_代码-（JAVA）.docx")]
+    let docs = [("guide", "\(softwareName)指南.docx"), ("code", "\(softwareName)指南_代码-（JAVA）.docx")].filter { !guideOnly || $0.0 == "guide" }
     let stamp = timestampSlug()
     let staging = Path.join(stagingRoot, "\(Path.basename(projectDir))-pdf-\(stamp)")
     try FS.mkdirp(staging)
     defer { FS.remove(staging) }
     var results: [(String, PdfFontResult)] = []
     var warnings: [String] = []
+    var repairedGuide: String?
     for (kind, docx) in docs {
-        let source = Path.join(bundle, docx)
+        var source = Path.join(bundle, docx)
         guard FS.exists(source) else { continue }
+        if kind == "guide", try guideNeedsImageFitRepair(source) {
+            guard var content = try FS.readJSON(paths.content) else {
+                throw StudioError("旧指南截图超出栏宽，需要 content.json 和原截图才能重排；原交付包已保留")
+            }
+            await onLog("修复指南截图排版：按左栏宽度与页高等比例缩放，保留已有截图和正文")
+            content["screens"] = .array(content["screens"].items.map { screen in
+                var next = screen
+                let image = screen["image"].text
+                next["image"] = .string(Path.isAbsolute(image) ? image : Path.join(projectDir, image))
+                return next
+            })
+            try createGuideDocx(project: staging, software: softwareName, content: content)
+            source = Path.join(staging, softwareName, docx)
+            if try guideNeedsImageFitRepair(source) { throw StudioError("重排后的指南仍有图片超出栏宽，原交付包已保留") }
+            guard try guideContentIdentity(Path.join(bundle, docx)) == guideContentIdentity(source) else {
+                throw StudioError("现有指南 Word 的正文或截图与项目源文件不一致，可能做过手工编辑；为避免覆盖，已保留原交付包。请先核对项目正文与原图，再重新导出")
+            }
+            repairedGuide = source
+        }
         await onLog("重新导出 \(Rx.replace("\\.docx$", in: docx, with: ".pdf"))")
-        let result = try await convertToPdfChecked(source, outDir: staging, kind: kind, fontPlan: fontPlan)
+        let result: PdfFontResult
+        if kind == "code", try codeExactPages(source) != nil {
+            result = try await renderCodeTemplate(CodeWordTemplate(data: FS.read(source)), project: staging, software: softwareName, fontPlan: fontPlan)
+        } else {
+            result = try await convertToPdfChecked(source, outDir: staging, kind: kind, fontPlan: fontPlan)
+        }
+        guard let pages = countPdfPages(result.pdfPath), pages > 0 else { throw StudioError("导出的PDF页数无效，原交付包已保留") }
+        if kind == "code", let minimum = try codeMinimumPages(source) {
+            _ = try requireCodePdfPages(result.pdfPath, minimum: minimum)
+        }
         results.append((kind, result))
         if let warning = pdfFontWarning(kind, result) { warnings.append(warning) }
     }
     if results.isEmpty { throw StudioError("交付包里没有 Word 文档") }
+    var replacements = results.map { $0.1.pdfPath }
+    if let repairedGuide { replacements.insert(repairedGuide, at: 0) }
     let archiveDir = Path.join(paths.archive, "\(softwareName)-PDF-\(stamp)")
-    for (_, result) in results {
-        let name = Path.basename(result.pdfPath)
+    // 先完整备份，保留原文件直到全部转换通过。
+    for source in replacements {
+        let name = Path.basename(source)
         let target = Path.join(bundle, name)
         if FS.exists(target) {
             try FS.mkdirp(archiveDir)
-            try FS.move(target, Path.join(archiveDir, name))
+            try FS.copy(target, Path.join(archiveDir, name))
         }
-        try FileManager.default.copyItem(atPath: result.pdfPath, toPath: target)
     }
-    return .obj(["files": JSON(results.map { Path.basename($0.1.pdfPath) }), "pdfFonts": summarizeFonts(results), "warnings": JSON(warnings)])
+    var committed: [String] = []
+    do {
+        for source in replacements {
+            let name = Path.basename(source)
+            try FS.writeAtomic(Path.join(bundle, name), FS.read(source))
+            committed.append(name)
+        }
+    } catch {
+        for name in committed.reversed() {
+            let backup = Path.join(archiveDir, name)
+            let target = Path.join(bundle, name)
+            if FS.exists(backup) { try FS.writeAtomic(target, FS.read(backup)) }
+            else { FS.remove(target) }
+        }
+        throw error
+    }
+    let guidePages = countPdfPages(Path.join(bundle, "\(softwareName)指南.pdf"))
+    let codePages = countPdfPages(Path.join(bundle, "\(softwareName)\(CODE_SUFFIX).pdf"))
+    if var manifest = FS.readJSONQuiet(paths.manifest) {
+        if manifest["codePagination"].isTruthy { manifest["codePagination"]?["pdfPages"] = JSON.maybe(codePages) }
+        if repairedGuide != nil { manifest["guideLayoutVersion"] = 2 }
+        manifest["pdfFonts"] = manifest["pdfFonts"].or(.emptyObject).merging(summarizeFonts(results))
+        try FS.writeJSONAtomic(paths.manifest, manifest)
+    }
+    return .obj(["files": JSON(replacements.map { Path.basename($0) }), "guideLayoutRepaired": .bool(repairedGuide != nil), "pdfFonts": summarizeFonts(results), "warnings": JSON(warnings), "pdfPages": JSON.maybe(guidePages), "codePdfPages": JSON.maybe(codePages)])
 }

@@ -88,3 +88,10 @@ public func planVisibleTexts(_ plan: JSON) -> [String] {
 public func platformFixInstruction(_ hits: [String]) -> String {
     "去掉文中的系统或设备字样（\(hits.joined(separator: "、"))），改成「手机」「移动端」「App」等通用说法；其余内容和结构尽量保持不变"
 }
+
+/// 指南和 TXT 共用的封面介绍也在这里校验，避免手动编辑后绕过生成时检查。
+public func guideVisibleTexts(_ content: JSON) -> [String] {
+    [content["cover"]?["overview"].text ?? ""]
+        + content["screens"].items.flatMap { [$0["title"].text, $0["caption"].text, $0["text"].text] }
+        + (content["design"]?["sections"].items ?? []).flatMap { [$0["title"].text, $0["text"].text] }
+}

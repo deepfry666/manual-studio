@@ -70,6 +70,7 @@ public func runProcess(_ executable: String, _ arguments: [String], timeoutSec: 
 // MARK: - LibreOffice
 
 func sofficeCandidates() -> [String] {
+    if let override = ProcessInfo.processInfo.environment["MS_SOFFICE"], !override.isEmpty { return [override] }
     var candidates = ["/Applications/LibreOffice.app/Contents/MacOS/soffice", Path.join(NSHomeDirectory(), "Applications/LibreOffice.app/Contents/MacOS/soffice")]
     let pathEnv = ProcessInfo.processInfo.environment["PATH"] ?? ""
     // App 从访达打开时 PATH 很短，把常见的安装位置也找一遍

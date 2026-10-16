@@ -57,6 +57,7 @@ struct DeliveryTab: View {
                         SettingsRow(label: "PDF") {
                             if build["withPdf"].isTruthy {
                                 Text("说明书 \(build["pdfPages"]?.int.map(String.init) ?? "?") 页")
+                                if let pages = build["codePdfPages"]?.int { Text("代码 \(pages) 页") }
                             } else {
                                 StatusDot(kind: .warn, text: "未生成（没有 LibreOffice）")
                             }
@@ -104,6 +105,16 @@ struct DeliveryTab: View {
                     SettingsRow(label: "源码", info: code["locked"].isTruthy ? "第一次生成交付包时已记下，以后改设置不影响这个项目。" : "来自设置；第一次生成交付包时记下来。") {
                         PathText(path: code["source"]?["path"]?.string, empty: "没有")
                     }
+                    if code["source"].truthyValue != nil, code["locked"].isTruthy, !readOnly {
+                        SettingsRow(label: "更换模板", hint: "切换后点「生成 / 更新」，原交付包会先归档。") {
+                            Button("改用设置里的模板") {
+                                Task {
+                                    await model.perform { try await model.core?.pipeline.useGlobalCodeSource(data.dir) }
+                                    onChanged()
+                                }
+                            }.disabled(code["global"].truthyValue == nil || running)
+                        }
+                    }
                     if code["source"].truthyValue == nil, oldCodeDoc, !readOnly, !data.request["allowDropCodeDoc"].isTruthy {
                         SettingsRow(label: "旧代码文档", hint: "重新生成交付包前要选一个") {
                             Button("用设置里的") {
@@ -136,7 +147,7 @@ struct DeliveryTab: View {
                 }
             }
         }
-        .confirmationDialog("只重新导出 PDF？", isPresented: $reexportConfirm, titleVisibility: .visible) {
+        .confirmationDialog("重新导出 PDF 并检查排版？", isPresented: $reexportConfirm, titleVisibility: .visible) {
             Button("重新导出") {
                 guard let core = model.core else { return }
                 model.toast(.info, "已开始重新导出 PDF")
@@ -150,7 +161,7 @@ struct DeliveryTab: View {
                 }
             }
         } message: {
-            Text("Word、TXT 和截图都不动，旧 PDF 移到项目的 archive 文件夹。")
+            Text("导出时检查截图栏宽，旧指南存在遮挡时用已有截图和正文重排指南 Word。TXT、代码 Word 和截图不变，不调用 AI；旧文件先归档。")
         }
     }
 

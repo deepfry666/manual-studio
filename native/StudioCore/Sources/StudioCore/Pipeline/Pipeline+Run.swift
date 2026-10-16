@@ -131,6 +131,9 @@ extension Pipeline {
         let settings = try await settingsStore.get()
         let batchId = options.batchId ?? "\(Path.basename(dir)):\(timestampSlug())"
         let fromIndex = options.from.flatMap { PIPELINE_STEPS.firstIndex(of: $0) } ?? 0
+        if initial["contentDateNeedsRefresh"].isTruthy, PIPELINE_STEPS.prefix(fromIndex).contains(where: { !["done", "skipped"].contains(initial["steps"]?[$0]?["status"]?.string ?? "") }) {
+            throw StudioError("内容日期已更改，请在概览点击「继续运行」，先更新全部截图和说明，再使用单屏重生或重写文字")
+        }
         let untilIndex = options.until.flatMap { PIPELINE_STEPS.firstIndex(of: $0) } ?? PIPELINE_STEPS.count - 1
         let force = Set(options.force)
         if fromIndex <= untilIndex { setProgress(dir, .obj(["plannedSteps": JSON(Array(PIPELINE_STEPS[fromIndex...untilIndex]))])) }
@@ -210,7 +213,10 @@ extension Pipeline {
         }
         let final = try readState(dir)
         let allDone = PIPELINE_STEPS.allSatisfy { ["done", "skipped"].contains(final["steps"]?[$0]?["status"]?.string ?? "") }
-        try await update(dir) { $0["status"] = .string(allDone ? "done" : "idle") }
+        try await update(dir) {
+            $0["status"] = .string(allDone ? "done" : "idle")
+            if allDone { $0["contentDateNeedsRefresh"] = nil }
+        }
         return RunResult(status: allDone ? "done" : "idle")
     }
 
@@ -374,6 +380,12 @@ extension Pipeline {
         try assertIdle(dir)
         let state = try readState(dir)
         let before = state["request"] ?? .emptyObject
+        var patch = patch
+        if let date = patch["contentDate"]?.string {
+            let value = date.jsTrimmed
+            if !value.isEmpty && !validContentDate(value) { throw StudioError("内容日期请填写有效的 YYYY-MM-DD 日期") }
+            patch["contentDate"] = .string(value.isEmpty ? localDateKey() : value)
+        }
         var next = before.merging(patch)
         // 版本号不用人选：按软件名自动判断（历史项目里单独填适用版本的保持不变）
         if let name = patch["softwareName"], before["versionPolicy"]?.string != "separate-metadata" {
@@ -394,15 +406,18 @@ extension Pipeline {
             }
             ["prompts", "gate", "receipt", "build"].forEach { dirty.insert($0) }
         }
-        if ["screenCount", "emphasis", "notes", "platform"].contains(where: { changed($0) && orNull(patch[$0]) != orNull(before[$0]) }) {
+        if ["screenCount", "emphasis", "notes", "platform", "contentDate"].contains(where: { changed($0) && orNull(patch[$0]) != orNull(before[$0]) }) {
             ["plan", "prompts", "images", "gate", "content", "receipt", "build"].forEach { dirty.insert($0) }
         }
+        if changed("contentDate") { dirty.insert("design") }
         if changed("wantDesign"), patch["wantDesign"].isTruthy != before["wantDesign"].isTruthy { ["design", "receipt", "build"].forEach { dirty.insert($0) } }
         if ["codeSource", "codeSourceLocked", "txtFields", "compileDate", "versionPolicy", "applicableVersion", "allowDropCodeDoc"].contains(where: changed) { dirty.insert("build") }
         if changed("extraBrandTokens") { ["gate", "receipt", "build"].forEach { dirty.insert($0) } }
         let request = next
+        let refreshContentDate = dirty.contains("plan") && patch["contentDate"] != nil
         try await update(dir) { draft in
             draft["request"] = request
+            if refreshContentDate { draft["contentDateNeedsRefresh"] = true }
             appendLog(&draft, "项目设置已更新")
         }
         try await markDirty(dir, PIPELINE_STEPS.filter { dirty.contains($0) })
@@ -437,7 +452,7 @@ extension Pipeline {
         }
     }
 
-    /// 只重新导出交付包里的 PDF（修正字体），Word、TXT 和截图都不动。
+    /// 重新导出PDF；旧指南图片超宽时先用已有内容重排Word，TXT和截图不动。
     public func reexportPdfs(_ dir: String) async throws -> JSON {
         try assertIdle(dir)
         let handle = RunHandle(cancellable: false)
@@ -453,6 +468,9 @@ extension Pipeline {
             try await self.update(dir) { draft in
                 if var lastBuild = draft["lastBuild"].truthyValue {
                     lastBuild["pdfFonts"] = lastBuild["pdfFonts"].or(.emptyObject).merging(result["pdfFonts"])
+                    lastBuild["pdfPages"] = result["pdfPages"]
+                    lastBuild["codePdfPages"] = result["codePdfPages"]
+                    lastBuild["withPdf"] = true
                     lastBuild["warnings"] = .array(lastBuild["warnings"].items.filter { !$0.jsString.contains("PDF 字体不对") } + result["warnings"].items)
                     draft["lastBuild"] = lastBuild
                 }
@@ -460,7 +478,7 @@ extension Pipeline {
                 appendLog(&draft, "已重新导出 PDF：\(jsJoin(result["files"].items, "、"))\(warnings.isEmpty ? "" : "（\(warnings.joined(separator: "；"))）")", warnings.isEmpty ? "info" : "warn")
             }
             try await updateRecord(dir) { record in
-                record.append("history", .obj(["at": .string(isoNow()), "event": "pdf-reexported", "files": result["files"], "pdfFonts": result["pdfFonts"]]))
+                record.append("history", .obj(["at": .string(isoNow()), "event": "pdf-reexported", "files": result["files"], "pdfFonts": result["pdfFonts"], "pdfPages": result["pdfPages"], "codePdfPages": result["codePdfPages"]]))
             }
             return result
         }

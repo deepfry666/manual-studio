@@ -98,12 +98,15 @@ struct SingleProjectForm: View {
                     }
                 }
                 SettingsGroup(title: "生成选项") {
-                    SettingsRow(label: "平台") {
+                    SettingsRow(label: "截图样式", hint: "仅决定界面样式，文档省略运行平台") {
                         Picker("", selection: $platform) {
                             ForEach(PLATFORMS, id: \.value) { Text($0.label).tag($0.value) }
                         }
                         .labelsHidden()
                         .frame(width: 240, alignment: .trailing)
+                    }
+                    SettingsRow(label: "内容日期", hint: "默认新建当天；可在项目概览修改") {
+                        Text(localDateKey()).foregroundStyle(.secondary)
                     }
                     SettingsRow(label: "设计说明章节") {
                         Toggle("", isOn: $wantDesign).toggleStyle(.switch).labelsHidden()
@@ -197,12 +200,15 @@ struct BatchProjectForm: View {
                 }
                 SettingsGroup(title: "生成选项") {
                     ScreenCountRow(hint: "没在列表里写截图数的项目", autoCount: $autoCount, screenCount: $screenCount)
-                    SettingsRow(label: "平台") {
+                    SettingsRow(label: "截图样式", hint: "仅决定界面样式，文档省略运行平台") {
                         Picker("", selection: $platform) {
                             ForEach(PLATFORMS, id: \.value) { Text($0.label).tag($0.value) }
                         }
                         .labelsHidden()
                         .frame(width: 240, alignment: .trailing)
+                    }
+                    SettingsRow(label: "内容日期", hint: "默认新建当天；可在项目概览修改") {
+                        Text(localDateKey()).foregroundStyle(.secondary)
                     }
                     SettingsRow(label: "设计说明章节") { Toggle("", isOn: $wantDesign).toggleStyle(.switch).labelsHidden() }
                     CodeSourceRow()

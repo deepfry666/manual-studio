@@ -71,6 +71,14 @@ public func createImportedState(_ dir: String, _ info: JSON) throws -> JSON {
     request["applicableVersion"] = .string(content?["applicableVersion"].text ?? "")
     request["screenCount"] = contentScreens.isEmpty ? info["screens"].or(.null) : .number(Double(contentScreens.count))
     if let createdAt = content?["createdAt"].truthyValue ?? manifest?["createdAt"].truthyValue { request["createdAt"] = createdAt }
+    if let date = [content?["contentDate"].text, manifest?["contentDate"].text].compactMap({ $0 }).first(where: validContentDate) {
+        request["contentDate"] = .string(date)
+    }
+    if let override = content?["compileDateOverride"] {
+        request["compileDate"] = override
+    } else if let compileDate = content?["compileDate"]?.string, let date = request["contentDate"]?.string, compileDate != contentDateChinese(date) {
+        request["compileDate"] = .string(compileDate)
+    }
     request["wantDesign"] = .bool(!(content?["design"]?["sections"]?.array?.isEmpty ?? true))
     request["origin"] = "imported"
     var state = newState(.object(request))

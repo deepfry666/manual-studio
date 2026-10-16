@@ -23,6 +23,8 @@ struct ProjectsView: View {
     @State private var exportDirs: ExportRequest?
     @State private var pdfTargets: [String]?
     @State private var removeTargets: [ProjectRow]?
+    @State private var codeTemplateTargets: [String]?
+    @State private var applyingCodeTemplate = false
 
     struct ExportRequest: Identifiable {
         let id = UUID()
@@ -82,6 +84,9 @@ struct ProjectsView: View {
             VStack(spacing: 10) {
                 SetupHint()
                 QueueBar()
+                if applyingCodeTemplate {
+                    Banner(.info, "正在批量应用当前代码模板，逐份验收 PDF 正好 60 页；完成后会显示结果")
+                }
                 if let job = model.pdfJob {
                     Banner(.info, "正在重新导出 PDF：\(job.index + 1)/\(job.total)（\(model.projects.first { $0.dir == job.current }?.name ?? "")）")
                 }
@@ -112,7 +117,12 @@ struct ProjectsView: View {
         .confirmationDialog(pdfTargets.map { "重新导出 \($0.count) 个项目的 PDF？" } ?? "", isPresented: Binding(get: { pdfTargets != nil }, set: { if !$0 { pdfTargets = nil } }), titleVisibility: .visible) {
             Button("开始") { startPdfReexport(pdfTargets ?? []) }
         } message: {
-            Text("只用交付包里现有的 Word 重新转 PDF（修正字体），Word、TXT 和截图都不动；旧 PDF 移到项目的 archive 文件夹。每个项目大约 10–40 秒，一个个来。")
+            Text("重新导出 PDF；旧指南存在截图超宽时，用已有截图和正文重排指南 Word。TXT、代码 Word 和原截图不变，不调用 AI，旧文件先归档。每个项目依次处理。")
+        }
+        .confirmationDialog(codeTemplateTargets.map { "将当前代码模板应用到 \($0.count) 个项目？" } ?? "", isPresented: Binding(get: { codeTemplateTargets != nil }, set: { if !$0 { codeTemplateTargets = nil } }), titleVisibility: .visible) {
+            Button("应用模板并更新代码材料") { startCodeTemplateBatch(codeTemplateTargets ?? []) }
+        } message: {
+            Text("使用设置中的 Word 模板，逐份验收代码 PDF 正好 60 页、非空白代码超过 3000 行。更新代码 Word、PDF 和 TXT 的编程语言、源程序量，旧材料先归档。指南和截图保留；不调用 AI。正在运行或排队的项目会跳过，失败项目保留原材料。")
         }
         .confirmationDialog(removeTargets.map { $0.count == 1 ? "移除「\($0[0].name)」？" : "移除 \($0.count) 个项目？" } ?? "", isPresented: Binding(get: { removeTargets != nil }, set: { if !$0 { removeTargets = nil } }), titleVisibility: .visible) {
             Button("只从列表移除") { remove(removeTargets ?? [], deleteFolder: false) }
@@ -122,7 +132,7 @@ struct ProjectsView: View {
         }
     }
 
-    var hasTopContent: Bool { model.pdfJob != nil || !model.batchItems.isEmpty || setupMissing }
+    var hasTopContent: Bool { applyingCodeTemplate || model.pdfJob != nil || !model.batchItems.isEmpty || setupMissing }
     var setupMissing: Bool { SetupHint.missing(model).isEmpty == false }
 
     var subtitle: String {
@@ -268,6 +278,8 @@ struct ProjectsView: View {
         Button("开始处理") { start(targets) }
         Button("导出…") { exportDirs = ExportRequest(dirs: targets.map(\.dir)) }
         Button("重新导出 PDF") { askPdf(targets) }
+        Button("批量应用当前代码模板…") { askCodeTemplate(targets) }
+            .disabled(applyingCodeTemplate || model.pdfJob != nil)
         if targets.contains(where: \.pdfFontProblem) {
             Button("忽略字体提示") { ignoreFonts(targets) }
         }
@@ -354,6 +366,8 @@ struct ProjectsView: View {
                     .help("导出…")
                 Menu {
                     Button("重新导出 PDF") { askPdf(selectedRows) }
+                    Button("批量应用当前代码模板…") { askCodeTemplate(selectedRows) }
+                        .disabled(applyingCodeTemplate || model.pdfJob != nil)
                     if selectedRows.contains(where: \.pdfFontProblem) {
                         Button("忽略字体提示") { ignoreFonts(selectedRows) }
                     }
@@ -395,6 +409,35 @@ struct ProjectsView: View {
     func askPdf(_ targets: [ProjectRow]) {
         let dirs = targets.filter { $0.hasBundle && $0.status != "running" }.map(\.dir)
         if dirs.isEmpty { model.toast(.info, "选中的项目没有交付包，或者正在运行") } else { pdfTargets = dirs }
+    }
+
+    func askCodeTemplate(_ targets: [ProjectRow]) {
+        guard !targets.isEmpty else { return }
+        if Path.extname(model.settings.codeSource.path).lowercased() != ".docx" {
+            model.toast(.info, "请先在「设置 → 代码来源」选择新的 Word 代码模板")
+        } else { codeTemplateTargets = targets.map(\.dir) }
+    }
+
+    func startCodeTemplateBatch(_ dirs: [String]) {
+        codeTemplateTargets = nil
+        guard let core = model.core, !applyingCodeTemplate else { return }
+        applyingCodeTemplate = true
+        Task {
+            let result = await core.applyCurrentCodeTemplate(dirs)
+            await model.reloadProjects()
+            applyingCodeTemplate = false
+            let done = result["done"].items
+            let failed = result["failed"].items.map(\.jsString)
+            let skipped = result["skipped"].items.map(\.jsString)
+            let fontWarnings = done.flatMap { $0["warnings"].items.map(\.jsString) }
+            selection.subtract(done.compactMap { $0["dir"]?.string })
+            let details = skipped.map { "跳过：\($0)" } + failed.map { "失败：\($0)" } + fontWarnings
+            if !details.isEmpty {
+                model.alert = AlertItem(title: "代码模板：成功 \(done.count) 个，跳过 \(skipped.count) 个，失败 \(failed.count) 项", message: details.joined(separator: "\n"))
+            } else {
+                model.toast(.success, "已更新 \(done.count) 个项目，代码 PDF 均为 60 页，旧材料已归档")
+            }
+        }
     }
 
     func startPdfReexport(_ dirs: [String]) {

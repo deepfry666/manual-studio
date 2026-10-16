@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationXML)
+import FoundationXML
+#endif
 
 /// 排版常量 —— 全部来自旧 skill 的 references/word-format.md（lib/guide-constants.js），不改。
 enum GuideConstants {
@@ -242,8 +245,61 @@ func validateGuideContent(_ content: JSON, _ software: String) throws -> JSON? {
             design = .obj(["sections": .array(sections)])
         }
     }
+    errors.append(contentsOf: platformProblems(software, "指南正文、标题或设计说明", guideVisibleTexts(content)))
     if !errors.isEmpty { throw StudioError("content.json 校验失败：\n- " + errors.joined(separator: "\n- ")) }
     return design
+}
+
+/// Word 图形尺寸使用 EMU；从栏内宽和整页可用高度反推上限，给图注与段落留空间。
+func guideImageBounds(caption: String) -> (width: Double, height: Double) {
+    let C = GuideConstants.self
+    let width = Double(C.COL_IMAGE_WIDTH - 2 * C.CELL_MARGIN_LR) * 635 - 2 * 12700
+    let captionFont = Double(C.SIZE_CAPTION) / 2
+    let lines = max(1, ceil(Double(caption.jsLength) * captionFont / (width / 12700)))
+    let reserved = lines * captionFont * 1.5 + Double(C.BEFORE_CAPTION + C.AFTER_CAPTION) / 20 + 28
+    let height = Double(C.PAGE_HEIGHT - C.MARGIN_TOP - C.MARGIN_BOTTOM - 2 * C.CELL_MARGIN_TB) * 635 - reserved * 12700
+    return (width, max(12700, height))
+}
+
+func guideImageExtent(width: Int, height: Int, caption: String) -> (cx: Int, cy: Int) {
+    let bounds = guideImageBounds(caption: caption)
+    let originalWidth = Double(width) * 9525
+    let originalHeight = Double(height) * 9525
+    let scale = min(1, bounds.width / originalWidth, bounds.height / originalHeight)
+    return (max(1, Int((originalWidth * scale).rounded(.down))), max(1, Int((originalHeight * scale).rounded(.down))))
+}
+
+/// 旧版把截图统一设为 240pt；重新导出前检测这种越过栏宽/页高的布局。
+func guideNeedsImageFitRepair(_ file: String) throws -> Bool {
+    let zip = try ZipReader(FS.read(file))
+    guard let data = try zip.read("word/document.xml") else { throw StudioError("指南 Word 缺少正文") }
+    let xml = String(decoding: data, as: UTF8.self)
+    let bounds = guideImageBounds(caption: "")
+    return Rx.matches(#"<wp:extent\s+cx="([0-9]+)"\s+cy="([0-9]+)""#, xml).contains { groups in
+        let width = Double(groups[1] ?? "") ?? 0
+        let height = Double(groups[2] ?? "") ?? 0
+        return width > bounds.width + 1 || height > bounds.height + 1
+    }
+}
+
+/// 重排只允许改变布局：正文文字和图片内容/顺序必须与现有 Word 一致。
+func guideContentIdentity(_ file: String) throws -> String {
+    let zip = try ZipReader(FS.read(file))
+    guard let body = try zip.read("word/document.xml"), let relationships = try zip.read("word/_rels/document.xml.rels") else { throw StudioError("指南 Word 部件不完整") }
+    let document = try XMLDocument(data: body)
+    let rels = try XMLDocument(data: relationships)
+    let text = try document.nodes(forXPath: "//*[local-name()='t']").map { $0.stringValue ?? "" }.joined()
+    var targets: [String: String] = [:]
+    for node in try rels.nodes(forXPath: "//*[local-name()='Relationship']") {
+        guard let element = node as? XMLElement, let id = element.attribute(forName: "Id")?.stringValue, let target = element.attribute(forName: "Target")?.stringValue else { continue }
+        targets[id] = target
+    }
+    let ordered = try document.nodes(forXPath: "//*[local-name()='blip']/@*[local-name()='embed']").map { node -> JSON in
+        guard let id = node.stringValue, let target = targets[id], let image = try zip.read("word/" + target) else { throw StudioError("指南 Word 图片引用不完整") }
+        return .string(sha256Hex(image))
+    }
+    let allMedia = try zip.entries.filter { $0.name.hasPrefix("word/media/") && !$0.isDirectory }.map { sha256Hex(try zip.read($0)) }.sorted()
+    return hashObject(.obj(["text": .string(text), "orderedImages": .array(ordered), "allMedia": JSON(allMedia)]))
 }
 
 /// 生成指南 Word：{project}/{software}/{software}指南.docx。返回 region 片段。
@@ -276,8 +332,8 @@ public func createGuideDocx(project: String, software: String, content: JSON) th
         guard FS.exists(imageAbs) else { throw StudioError("\(id) 截图不存在：\(imageAbs)") }
         let data = try FS.read(imageAbs)
         let size = try readImageSize(data, imageAbs)
-        let drawW = C.IMAGE_WIDTH_PX
-        let drawH = Int(jsRound(Double(size.height) / Double(size.width) * Double(drawW)))
+        let caption = screen["caption"]?.string?.jsTrimmed ?? ""
+        let extent = guideImageExtent(width: size.width, height: size.height, caption: caption)
         let name = "\(sha1Hex(data)).\(size.type)"
         var mediaIndex = media.firstIndex { $0.name == name }
         if mediaIndex == nil {
@@ -285,10 +341,9 @@ public func createGuideDocx(project: String, software: String, content: JSON) th
             mediaIndex = media.count - 1
         }
         imageCounter += 1
-        let cx = drawW * 9525
-        let cy = drawH * 9525
+        let cx = extent.cx
+        let cy = extent.cy
         let drawing = "<w:r><w:drawing><wp:inline distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\"><wp:extent cx=\"\(cx)\" cy=\"\(cy)\"/><wp:effectExtent t=\"0\" r=\"0\" b=\"0\" l=\"0\"/><wp:docPr id=\"\(imageCounter)\" name=\"\" descr=\"\" title=\"\"/><wp:cNvGraphicFramePr><a:graphicFrameLocks xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" noChangeAspect=\"1\"/></wp:cNvGraphicFramePr><a:graphic xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\"><a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/picture\"><pic:pic xmlns:pic=\"http://schemas.openxmlformats.org/drawingml/2006/picture\"><pic:nvPicPr><pic:cNvPr id=\"0\" name=\"\" descr=\"\"/><pic:cNvPicPr><a:picLocks noChangeAspect=\"1\" noChangeArrowheads=\"1\"/></pic:cNvPicPr></pic:nvPicPr><pic:blipFill><a:blip r:embed=\"rId\(8 + mediaIndex!)\" cstate=\"none\"/><a:srcRect/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr bwMode=\"auto\"><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"\(cx)\" cy=\"\(cy)\"/></a:xfrm><a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>"
-        let caption = screen["caption"]?.string?.jsTrimmed ?? ""
         let title = screen["title"]?.string?.jsTrimmed ?? ""
         let leftCell = "<w:tc><w:tcPr><w:tcW w:type=\"dxa\" w:w=\"\(C.COL_IMAGE_WIDTH)\"/>\(cellMargins)<w:vAlign w:val=\"center\"/></w:tcPr>"
             + paragraph(spacing(after: 0, before: 0) + jc("center"), drawing)
@@ -303,7 +358,7 @@ public func createGuideDocx(project: String, software: String, content: JSON) th
         // 第 2 屏起，节前插分页符，保证每屏独占一页且尾部不留空白
         body += paragraph((n > 1 ? "<w:pageBreakBefore/>" : "") + spacing(after: 0, before: 0))
         // 软件指南生成器补丁：整行不跨页，防止「图N」图注单独掉到下一页。
-        body += "<w:tbl><w:tblPr><w:tblW w:type=\"dxa\" w:w=\"\(C.USABLE_WIDTH)\"/><w:tblBorders>\(tableBorders)</w:tblBorders></w:tblPr><w:tblGrid><w:gridCol w:w=\"\(C.COL_IMAGE_WIDTH)\"/><w:gridCol w:w=\"\(C.COL_TEXT_WIDTH)\"/></w:tblGrid><w:tr><w:trPr><w:cantSplit/></w:trPr>\(leftCell)\(rightCell)</w:tr></w:tbl>"
+        body += "<w:tbl><w:tblPr><w:tblW w:type=\"dxa\" w:w=\"\(C.USABLE_WIDTH)\"/><w:tblLayout w:type=\"fixed\"/><w:tblBorders>\(tableBorders)</w:tblBorders></w:tblPr><w:tblGrid><w:gridCol w:w=\"\(C.COL_IMAGE_WIDTH)\"/><w:gridCol w:w=\"\(C.COL_TEXT_WIDTH)\"/></w:tblGrid><w:tr><w:trPr><w:cantSplit/></w:trPr>\(leftCell)\(rightCell)</w:tr></w:tbl>"
         region[id] = .obj([
             "label": .string(title),
             "caption": .string(caption),
@@ -377,11 +432,8 @@ public func createGuideTxt(project: String, software: String, overview: String, 
     for (key, value) in fields { f[key] = value }
     let template = [
         "【开发的硬件环境】\(f["devHardware"] ?? "")",
-        "【运行的硬件环境】\(f["runHardware"] ?? "")",
         "【开发该软件的操作系统】\(f["devOs"] ?? "")",
         "【软件开发环境/开发工具】\(f["devTools"] ?? "")",
-        "【该软件的运行平台/操作系统】\(f["runPlatform"] ?? "")",
-        "【软件运行支撑环境/支持软件】\(f["runSupport"] ?? "")",
         "【编程语言】\(f["language"] ?? "")",
         "【源程序量】\(sourceLines > 0 ? "\(sourceLines)行" : "")",
         "【软件的主要功能】",

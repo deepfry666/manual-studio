@@ -196,7 +196,7 @@ public final class Pipeline: @unchecked Sendable {
         try await log(dir, "正在让大模型规划界面…")
         let plan = try await callLlm("plan", dir, ChatJsonRequest(
             system: PLAN_SYSTEM,
-            user: planUserPrompt(softwareName: name, screenCount: screenCount, emphasis: request["emphasis"].text, notes: request["notes"].text, platform: platform) + platformNeutralRule(name, forPlan: true),
+            user: planUserPrompt(softwareName: name, screenCount: screenCount, emphasis: request["emphasis"].text, notes: request["notes"].text, platform: platform) + platformNeutralRule(name, forPlan: true) + contentDateRule(ctx.state),
             schema: PLAN_SCHEMA,
             check: { planCheck($0, softwareName: name, screenCount: screenCount) + platformProblems(name, "规划的用户、流程或界面文字", planVisibleTexts($0)) },
             temperature: 0.8,
@@ -285,6 +285,11 @@ public final class Pipeline: @unchecked Sendable {
                 prompt = composeScreenPrompt(softwareName: name, platform: platform, targetSize: settings.image.targetSize, ui: ui, screen: screen)
                 promptHash = promptIdentity(prompt, name)
             }
+            // 历史项目改名和无改动续跑保留旧截图；新项目或主动设置日期后应用规则。
+            if state["request"]?["contentDate"].isTruthy == true {
+                prompt = ensureContentDateRule(prompt, state)
+                promptHash = promptIdentity(prompt, name)
+            }
             if FS.readTextIfExists(file) != prompt { try FS.writeAtomic(file, prompt) }
             screenStates[id] = .obj(["planRowHash": .string(rowHash), "promptHash": .string(promptHash), "promptEdited": keepValue])
         }
@@ -325,6 +330,8 @@ public final class Pipeline: @unchecked Sendable {
             let patch: JSON = ["promptHash": .string(promptIdentity(prompt, name)), "planRowHash": .string(planRowHash(screen, ui, platform, settings.image.targetSize)), "promptEdited": false]
             try await update(dir) { draft in draft.mergeChild("screens", id, patch) }
         }
+        prompt = ensureContentDateRule(prompt, state)
+        if FS.readTextIfExists(paths.promptFile(id)) != prompt { try FS.writeAtomic(paths.promptFile(id), prompt) }
         emit(.obj(["type": "screen", "projectDir": .string(dir), "screenId": .string(id), "status": "generating", "reason": JSON.maybe(reason)]))
         setScreenProgress(dir, id, ["status": .string(reason != nil ? "regenerating" : "generating"), "startedAt": .number(nowMs()), "finishedAt": nil, "provider": nil, "hedged": false])
         let result = try await gateway.generate(GenerateRequest(
