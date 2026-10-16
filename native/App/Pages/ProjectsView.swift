@@ -14,11 +14,9 @@ private let TIME_FILTERS: [(value: String, label: String)] = [("all", "全部时
 
 struct ProjectsView: View {
     @Environment(AppModel.self) private var model
-    @State private var query = ""
-    @State private var statusFilter = "all"
-    @State private var timeFilter = "all"
-    @State private var batchFilter = "all"
-    @State private var pickedDate = Date()
+    // 排序：默认按最近动过，新的在上；点表头换排法，记住上次选的
+    @AppStorage("projects.sortKey") private var sortKey = "recent"
+    @AppStorage("projects.sortAscending") private var sortAscending = false
     @State private var datePickerOpen = false
     @State private var selection = Set<String>()
     @State private var exportDirs: ExportRequest?
@@ -52,9 +50,22 @@ struct ProjectsView: View {
         let dirs: [String]
     }
 
+    private var query: String { model.listQuery }
+    private var statusFilter: String { model.listStatus }
+    private var timeFilter: String { model.listTime }
+    private var batchFilter: String { model.listBatch }
+    private var pickedDate: Date { model.listPickedDate }
+    /// 有筛选条件（状态、时间、批次）在生效
+    var filtersActive: Bool { statusFilter != "all" || timeFilter != "all" || batchFilter != "all" }
+
     var rows: [ProjectRow] {
-        model.projects.filter { project in
-            if !query.isEmpty, !project.name.lowercased().contains(query.lowercased()) { return false }
+        let filtered = model.projects.filter { project in
+            if !query.isEmpty {
+                // 搜索时在全部项目里找，不受状态、时间、批次筛选限制
+                return project.name.lowercased().contains(query.lowercased())
+            }
+            // 刚看过的项目不被筛掉
+            if project.dir == model.stickyProject { return true }
             if !matchesTime(project) { return false }
             if batchFilter != "all", project.batchId != batchFilter { return false }
             switch statusFilter {
@@ -67,6 +78,47 @@ struct ProjectsView: View {
             default: return project.status == statusFilter
             }
         }
+        return sorted(filtered)
+    }
+
+    func sorted(_ list: [ProjectRow]) -> [ProjectRow] {
+        let ascending = sortAscending
+        func order<T: Comparable>(_ a: T, _ b: T, _ tieA: ProjectRow, _ tieB: ProjectRow) -> Bool {
+            if a == b { return tieA.recency > tieB.recency }
+            return ascending ? a < b : a > b
+        }
+        switch sortKey {
+        case "name": return list.sorted {
+            let result = $0.name.localizedStandardCompare($1.name)
+            if result == .orderedSame { return $0.recency > $1.recency }
+            return ascending ? result == .orderedAscending : result == .orderedDescending
+        }
+        case "status": return list.sorted { order($0.statusSortKey, $1.statusSortKey, $0, $1) }
+        case "build": return list.sorted { order($0.lastBuildSortKey, $1.lastBuildSortKey, $0, $1) }
+        default: return list.sorted { order($0.recency, $1.recency, $0, $1) }
+        }
+    }
+
+    /// 表格表头的排序状态和 sortKey 互相换算
+    var sortOrder: Binding<[KeyPathComparator<ProjectRow>]> {
+        Binding(get: {
+            let direction: SortOrder = sortAscending ? .forward : .reverse
+            switch sortKey {
+            case "name": return [KeyPathComparator(\ProjectRow.name, order: direction)]
+            case "status": return [KeyPathComparator(\ProjectRow.statusSortKey, order: direction)]
+            case "build": return [KeyPathComparator(\ProjectRow.lastBuildSortKey, order: direction)]
+            default: return [KeyPathComparator(\ProjectRow.recency, order: direction)]
+            }
+        }, set: { next in
+            guard let first = next.first else { return }
+            switch first.keyPath {
+            case \ProjectRow.name: sortKey = "name"
+            case \ProjectRow.statusSortKey: sortKey = "status"
+            case \ProjectRow.lastBuildSortKey: sortKey = "build"
+            default: sortKey = "recent"
+            }
+            sortAscending = first.order == .forward
+        })
     }
 
     /// 所有批次，最新的在前
@@ -107,6 +159,9 @@ struct ProjectsView: View {
             VStack(spacing: 10) {
                 SetupHint()
                 QueueBar()
+                if !query.isEmpty, filtersActive {
+                    Banner(.info, "正在全部项目里搜索", message: "状态、时间、批次筛选暂不生效；清空搜索后恢复。")
+                }
                 if applyingCodeTemplate {
                     Banner(.info, "正在更新代码材料，逐份检查 PDF 正好 60 页、每页 50 行；完成后会显示结果")
                 }
@@ -131,16 +186,23 @@ struct ProjectsView: View {
         }
         .onChange(of: batches.map(\.id)) { _, ids in
             // 选中的那一批已经不存在（项目都移除了），退回全部，免得列表莫名其妙是空的
-            if batchFilter != "all", !ids.contains(batchFilter) { batchFilter = "all" }
+            if batchFilter != "all", !ids.contains(batchFilter) { model.listBatch = "all" }
         }
         .onChange(of: model.devTimeFilter) { _, next in
             guard let value = next?.components(separatedBy: "#").first else { return }
             if value == "picker" { datePickerOpen = true }
-            else if value.hasPrefix("date:"), let date = ISO8601DateFormatter().date(from: value.dropFirst(5) + "T12:00:00Z") { pickedDate = date; timeFilter = "date" }
-            else { timeFilter = value }
+            else if value.hasPrefix("date:"), let date = ISO8601DateFormatter().date(from: value.dropFirst(5) + "T12:00:00Z") { model.listPickedDate = date; model.listTime = "date" }
+            else { model.listTime = value }
         }
         .navigationSubtitle(subtitle)
-        .searchable(text: $query, placement: .toolbar, prompt: "按软件名搜索")
+        .searchable(text: Binding(get: { model.listQuery }, set: { model.listQuery = $0 }), placement: .toolbar, prompt: "在全部项目里搜索软件名")
+        // 自己换了搜索或筛选，刚看过的项目就不再特意留着
+        .onChange(of: "\(model.listQuery)|\(model.listStatus)|\(model.listTime)|\(model.listBatch)") { _, _ in model.stickyProject = nil }
+        .onChange(of: model.listSelectRequest) { _, dir in
+            guard let dir else { return }
+            selection = [dir]
+            model.listSelectRequest = nil
+        }
         .toolbar { toolbar }
         .sheet(item: $exportDirs) { request in
             ExportSheet(dirs: request.dirs) { clearSelection() }
@@ -169,12 +231,12 @@ struct ProjectsView: View {
         }
     }
 
-    var hasTopContent: Bool { applyingCodeTemplate || model.pdfJob != nil || QueueBar.visible(model) || setupMissing }
+    var hasTopContent: Bool { (!query.isEmpty && filtersActive) || applyingCodeTemplate || model.pdfJob != nil || QueueBar.visible(model) || setupMissing }
     var setupMissing: Bool { SetupHint.missing(model).isEmpty == false }
 
     var subtitle: String {
         let running = model.projects.filter { $0.status == "running" }.count
-        let filtered = !query.isEmpty || statusFilter != "all" || timeFilter != "all" || batchFilter != "all"
+        let filtered = !query.isEmpty || filtersActive
         let total = filtered ? "显示 \(rows.count) / 共 \(model.projects.count) 个" : "共 \(model.projects.count) 个"
         return running > 0 ? "\(total) · \(running) 个运行中" : total
     }
@@ -182,7 +244,7 @@ struct ProjectsView: View {
     // MARK: 表格
 
     var table: some View {
-        Table(rows, selection: Binding(get: { selection }, set: { tableSelectionChanged($0) })) {
+        Table(rows, selection: Binding(get: { selection }, set: { tableSelectionChanged($0) }), sortOrder: sortOrder) {
             // 勾选框：不用按住 ⌘ 也能多选；勾过之后单击行也是加选 / 取消
             TableColumn("") { row in
                 Toggle("", isOn: Binding(
@@ -197,7 +259,7 @@ struct ProjectsView: View {
                 .help("勾选多个项目")
             }
             .width(22)
-            TableColumn("软件名") { row in
+            TableColumn("软件名", value: \.name) { row in
                 VStack(alignment: .leading, spacing: 4) {
                     Text(row.name).fontWeight(.semibold).lineLimit(1)
                     let tags = rowTags(row)
@@ -208,7 +270,7 @@ struct ProjectsView: View {
                 .padding(.vertical, 3)
             }
             .width(min: 200, ideal: 260)
-            TableColumn("状态") { row in statusTag(row) }
+            TableColumn("状态", value: \.statusSortKey) { row in statusTag(row) }
                 .width(min: 76, ideal: 90)
             TableColumn("进度") { row in ProgressCell(row: row) }
                 .width(min: 150, ideal: 180)
@@ -232,7 +294,9 @@ struct ProjectsView: View {
                 }
             }
             .width(min: 56, ideal: 70)
-            TableColumn("最近构建") { row in Text(formatTime(row.lastBuildAt)).foregroundStyle(.secondary).monospacedDigit() }
+            TableColumn("最近构建", value: \.lastBuildSortKey) { row in Text(formatTime(row.lastBuildAt)).foregroundStyle(.secondary).monospacedDigit() }
+                .width(min: 76, ideal: 90)
+            TableColumn("最近动过", value: \.recency) { row in Text(row.recency > 0 ? formatTime(ms: row.recency * 1000) : "—").foregroundStyle(.secondary).monospacedDigit() }
                 .width(min: 76, ideal: 90)
             TableColumn("") { row in
                 Button {
@@ -469,7 +533,7 @@ struct ProjectsView: View {
     @ToolbarContentBuilder
     var toolbar: some ToolbarContent {
         ToolbarItem(placement: .navigation) {
-            Picker("状态", selection: $statusFilter) {
+            Picker("状态", selection: Binding(get: { model.listStatus }, set: { model.listStatus = $0 })) {
                 ForEach(STATUS_FILTERS, id: \.value) { Text($0.label).tag($0.value) }
             }
             .pickerStyle(.menu)
@@ -478,14 +542,14 @@ struct ProjectsView: View {
         ToolbarItem(placement: .navigation) {
             // 时间和批次合在一个菜单里，免得工具栏太挤
             Menu {
-                Picker("时间", selection: $timeFilter) {
+                Picker("时间", selection: Binding(get: { model.listTime }, set: { model.listTime = $0 })) {
                     ForEach(TIME_FILTERS, id: \.value) { Text($0.label).tag($0.value) }
                     if timeFilter == "date" { Text(rangeLabel).tag("date") }
                 }
                 .pickerStyle(.inline)
                 Button("选择日期…") { datePickerOpen = true }
                 if !batches.isEmpty {
-                    Picker("批量新建的批次", selection: $batchFilter) {
+                    Picker("批量新建的批次", selection: Binding(get: { model.listBatch }, set: { model.listBatch = $0 })) {
                         Text("全部批次").tag("all")
                         ForEach(batches, id: \.id) { batch in Text("\(batch.label)（\(batch.count) 个）").tag(batch.id) }
                     }
@@ -498,15 +562,15 @@ struct ProjectsView: View {
             .help("按时间或批次筛选：选一批后点「全选」就能一起导出")
             .popover(isPresented: $datePickerOpen, arrowEdge: .bottom) {
                 VStack(alignment: .trailing, spacing: 10) {
-                    DatePicker("", selection: $pickedDate, in: ...Date(), displayedComponents: .date)
+                    DatePicker("", selection: Binding(get: { model.listPickedDate }, set: { model.listPickedDate = $0 }), in: ...Date(), displayedComponents: .date)
                         .datePickerStyle(.graphical)
                         .labelsHidden()
                         .environment(\.locale, Locale(identifier: "zh_CN"))
                     HStack {
                         Button("取消") { datePickerOpen = false }
                         Button("筛选这一天") {
-                            timeFilter = "date"
-                            batchFilter = "all"
+                            model.listTime = "date"
+                            model.listBatch = "all"
                             datePickerOpen = false
                         }
                         .buttonStyle(.borderedProminent)

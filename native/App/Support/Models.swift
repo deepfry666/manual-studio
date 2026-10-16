@@ -2,7 +2,7 @@ import Foundation
 import StudioCore
 
 /// 界面用的步骤名（比核心里的更短）。
-let STEP_ORDER = PIPELINE_STEPS
+nonisolated let STEP_ORDER = PIPELINE_STEPS
 let UI_STEP_LABELS: [String: String] = [
     "plan": "规划界面", "prompts": "提示词", "images": "生成截图", "gate": "检查截图",
     "content": "撰写文案", "design": "设计说明", "receipt": "核对记录", "build": "交付包",
@@ -61,7 +61,7 @@ let TXT_LABELS: [(key: String, label: String)] = [
 ]
 
 /// 历史项目列表的一行。
-struct ProjectRow: Identifiable, Hashable {
+nonisolated struct ProjectRow: Identifiable, Hashable, Sendable {
     let json: JSON
     /// 新建、生成、完成、最近改动的时间（列表按日期筛选用，载入时解析一次）。导入的项目不算导入那天。
     let activityDates: [Date]
@@ -74,6 +74,7 @@ struct ProjectRow: Identifiable, Hashable {
         if !imported { stamps.append(added) }
         if let updated = parseISO(json["updatedAt"]?.string), !imported || updated - (added ?? 0) > 10 * 60_000 { stamps.append(updated) }
         activityDates = stamps.compactMap { $0 }.map { Date(timeIntervalSince1970: $0 / 1000) }
+        recency = activityDates.map(\.timeIntervalSince1970).max() ?? 0
     }
     var id: String { dir }
     var dir: String { json["dir"]?.string ?? "" }
@@ -102,6 +103,11 @@ struct ProjectRow: Identifiable, Hashable {
     var batchId: String? { json["batch"]?["id"]?.string }
     var batchLabel: String { json["batch"]?["label"]?.string ?? "" }
     var batchCount: Int { json["batch"]?["count"]?.int ?? 0 }
+
+    /// 最近动过的时间（新建、修改、运行、生成交付包里最晚的一次，秒），列表默认按它排；载入时算一次
+    let recency: Double
+    var statusSortKey: String { submitted ? "已提交" : status }
+    var lastBuildSortKey: String { lastBuildAt ?? "" }
 
     /// 用时列：完成用时，没完成时显示累计
     var mainDurationMs: Double? { timing.flatMap { $0["completedMs"]?.number ?? $0["totalMs"]?.number } }

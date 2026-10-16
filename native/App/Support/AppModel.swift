@@ -50,6 +50,13 @@ struct PdfJob: Equatable {
     let current: String
 }
 
+/// 一个项目的实时进度和「该重新读了」的标记。项目页只盯自己这一份。
+@Observable
+final class ProjectSignal {
+    var live: JSON?
+    var revision = 0
+}
+
 /// 全局状态：核心服务、设置、项目列表、实时进度和事件。所有界面都从这里取数据。
 @Observable
 final class AppModel {
@@ -74,6 +81,16 @@ final class AppModel {
     var projectPath: [String] = []
     /// 历史项目列表当前显示的顺序（项目页的上一个 / 下一个用）
     var navigationOrder: [String] = []
+    // 历史项目列表的搜索和筛选：放在这里，切到别的页面再回来还在
+    var listQuery = ""
+    var listStatus = "all"
+    var listTime = "all"
+    var listBatch = "all"
+    var listPickedDate = Date()
+    /// 刚看过的项目：回到列表时，即使状态变了不符合筛选也照样显示，直到换筛选或搜别的
+    var stickyProject: String?
+    /// 从项目页回到列表时选中它
+    var listSelectRequest: String?
     /// 上一个项目停留的页面
     var lastProjectTab: ProjectTab?
     var modelsTab = "providers"
@@ -88,9 +105,16 @@ final class AppModel {
     var batchItems: [JSON] = []
     var batchPaused = false
     var pendingJobs: [JSON] = []
-    var live: [String: JSON] = [:]
     var activity: [String: [String]] = [:]
-    var revisions: [String: Int] = [:]
+    /// 每个项目一份实时进度和刷新标记：一个项目有动静，只刷新看着它的界面（以前所有项目共用一张表，谁动都整页重画）
+    @ObservationIgnored private var signals: [String: ProjectSignal] = [:]
+
+    func signal(_ dir: String) -> ProjectSignal {
+        if let existing = signals[dir] { return existing }
+        let created = ProjectSignal()
+        signals[dir] = created
+        return created
+    }
     var callsRevision = 0
     var settingsRevision = 0
     var pdfJob: PdfJob?
@@ -234,11 +258,16 @@ final class AppModel {
 
     func reloadProjects() async {
         guard let core else { return }
-        if let rows = try? await core.listProjects() {
-            projects = rows.map(ProjectRow.init(json:))
-            projectsLoaded = true
-        }
+        lastProjectsReload = Date()
+        guard let rows = try? await core.listProjects() else { return }
+        // 每行的时间解析放到后台做好，界面线程只换一下数据；内容没变就不动，免得整张表重画
+        let built = await Task.detached(priority: .userInitiated) { rows.map(ProjectRow.init(json:)) }.value
+        if built != projects { projects = built }
+        projectsLoaded = true
     }
+
+    @ObservationIgnored private var lastProjectsReload = Date.distantPast
+    @ObservationIgnored private var projectsReloadScheduled = false
 
     func reloadBatch() {
         guard let core else { return }
@@ -252,11 +281,21 @@ final class AppModel {
     }
 
     func bump(_ dir: String) {
-        debounce("project:\(dir)", 250) { [weak self] in self?.revisions[dir, default: 0] += 1 }
+        debounce("project:\(dir)", 250) { [weak self] in self?.signal(dir).revision += 1 }
     }
 
+    /// 列表刷新的固定节奏：最多每 2 秒一次，但一定会刷到。
+    /// 以前是「等事件停下来再刷」，批量运行时事件不停，要么一直不刷，要么停下时一下刷好几次。
     func scheduleProjectsReload(_ ms: Int = 800) {
-        debounce("projects", ms) { [weak self] in await self?.reloadProjects() }
+        guard !projectsReloadScheduled else { return }
+        projectsReloadScheduled = true
+        let wait = max(Double(ms) / 1000, 2 - Date().timeIntervalSince(lastProjectsReload))
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(max(0, wait)))
+            guard let self else { return }
+            self.projectsReloadScheduled = false
+            await self.reloadProjects()
+        }
     }
 
     func debounce(_ key: String, _ ms: Int, _ action: @escaping @MainActor () async -> Void) {
@@ -281,9 +320,9 @@ final class AppModel {
         case "progress":
             guard let dir else { return }
             if let progress = event["progress"], !progress.isNull {
-                live[dir] = progress
+                signal(dir).live = progress
             } else {
-                live[dir] = nil
+                signal(dir).live = nil
                 bump(dir)
             }
             scheduleProjectsReload()

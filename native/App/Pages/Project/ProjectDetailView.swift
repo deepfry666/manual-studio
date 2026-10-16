@@ -21,7 +21,7 @@ struct ProjectDetailView: View {
     @State private var renameOpen = false
     @State private var removeConfirm = false
 
-    var live: JSON? { model.live[dir] }
+    var live: JSON? { model.signal(dir).live }
     var running: Bool { (data?.runningFlag ?? false) || data?.status == "running" || live != nil }
 
     var body: some View {
@@ -35,7 +35,10 @@ struct ProjectDetailView: View {
             }
         }
         .navigationTitle(data?.name ?? "项目")
-        .task(id: model.revisions[dir, default: 0]) { await reload() }
+        .task(id: model.signal(dir).revision) { await reload() }
+        // 回到列表时这个项目照样显示（即使状态变了不符合筛选），并且选中它
+        .onAppear { model.stickyProject = dir }
+        .onDisappear { if model.projectPath.isEmpty { model.listSelectRequest = dir } }
         .onChange(of: model.devProjectTab) { _, next in if let next { tab = next } }
         .onChange(of: model.devFeedbackOpen) { _, next in if let next { feedbackOpen = next } }
     }

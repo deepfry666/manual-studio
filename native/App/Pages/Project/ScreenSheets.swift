@@ -26,7 +26,7 @@ struct ScreenPreviewSheet: View {
                 Button("关闭") { dismiss() }.keyboardShortcut(.cancelAction).help("关闭（Esc 或空格）")
             }
             HStack(alignment: .top, spacing: 20) {
-                ScreenImage(path: screen.file, version: screen.mtime)
+                ScreenImage(path: screen.file, version: screen.mtime, maxPixel: 2000)
                     .frame(width: 340)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                 ScrollView {

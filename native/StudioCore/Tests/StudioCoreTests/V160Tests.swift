@@ -200,3 +200,20 @@ struct V160Tests {
         _ = try await core.setSubmitted([made.created[1]], true)
     }
 }
+
+@Suite("1.6.1：时间解析")
+struct V161ParseTests {
+    @Test("快速时间解析和系统解析结果一致")
+    func fastISO() {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        for text in ["2026-10-16T06:26:35.359Z", "2000-02-29T23:59:59.999Z", "1999-12-31T00:00:00.000Z", "2026-03-01T12:00:00.001Z"] {
+            #expect(fastParseISO(text) == formatter.date(from: text)!.timeIntervalSince1970 * 1000, "\(text)")
+        }
+        #expect(fastParseISO("2026-10-16T06:26:35Z") == ISO8601DateFormatter().date(from: "2026-10-16T06:26:35Z")!.timeIntervalSince1970 * 1000)
+        #expect(fastParseISO("2026-10-16T14:26:35+08:00") == nil, "带时区的交给系统解析")
+        #expect(parseISO("2026-10-16T14:26:35+08:00") == ISO8601DateFormatter().date(from: "2026-10-16T14:26:35+08:00")!.timeIntervalSince1970 * 1000)
+        #expect(fastParseISO("2026-13-16T06:26:35.359Z") == nil)
+        #expect(parseISO("不是时间") == nil)
+    }
+}
