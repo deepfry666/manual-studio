@@ -4,8 +4,8 @@ import StudioCore
 /// 界面用的步骤名（比核心里的更短）。
 let STEP_ORDER = PIPELINE_STEPS
 let UI_STEP_LABELS: [String: String] = [
-    "plan": "规划界面", "prompts": "提示词", "images": "生成截图", "gate": "截图验收",
-    "content": "撰写文案", "design": "设计说明", "receipt": "审查回执", "build": "交付包",
+    "plan": "规划界面", "prompts": "提示词", "images": "生成截图", "gate": "检查截图",
+    "content": "撰写文案", "design": "设计说明", "receipt": "核对记录", "build": "交付包",
 ]
 
 enum Tone {
@@ -34,11 +34,12 @@ let PROJECT_STATUS: [String: (label: String, tone: Tone)] = [
     "canceled": ("已停止", .neutral),
     "missing": ("文件夹不见了", .red),
     "readonly": ("只读", .neutral),
+    "submitted": ("已提交", .purple),
 ]
 
 let GRADE_LABEL: [String: (label: String, tone: Tone)] = [
     "ready": ("可直接编辑", .green),
-    "needs-gate": ("待重新验收", .orange),
+    "needs-gate": ("待重新检查", .orange),
     "readonly": ("只读", .neutral),
 ]
 
@@ -47,11 +48,16 @@ let PLATFORMS: [(value: String, label: String)] = [
     ("Android 手机（原生 Android 界面）", "Android 手机"),
 ]
 
+/// TXT 开头的 8 个字段，名字和 TXT 里一样
 let TXT_LABELS: [(key: String, label: String)] = [
     ("devHardware", "开发的硬件环境"),
-    ("devOs", "开发操作系统"),
-    ("devTools", "开发环境 / 开发工具"),
+    ("runHardware", "运行的硬件环境"),
+    ("devOs", "开发该软件的操作系统"),
+    ("devTools", "软件开发环境 / 开发工具"),
+    ("runPlatform", "运行平台 / 操作系统"),
+    ("runSupport", "运行支撑环境 / 支持软件"),
     ("language", "编程语言"),
+    ("sourceLines", "源程序量"),
 ]
 
 /// 历史项目列表的一行。
@@ -74,7 +80,11 @@ struct ProjectRow: Identifiable, Hashable {
     var name: String { json["name"]?.jsString ?? Path.basename(dir) }
     var origin: String { json["origin"]?.string ?? "created" }
     var grade: String? { json["grade"]?.string }
-    var readOnly: Bool { json["readOnly"].isTruthy }
+    /// 只有交付包的历史项目
+    var historyReadOnly: Bool { json["readOnly"].isTruthy }
+    /// 已提交：只读，批量操作跳过
+    var submitted: Bool { json["submitted"].isTruthy }
+    var readOnly: Bool { historyReadOnly || submitted }
     var status: String { json["status"]?.string ?? "idle" }
     func step(_ name: String) -> String { json["steps"]?[name]?.string ?? "pending" }
     var hasBundle: Bool { json["hasBundle"].isTruthy }
@@ -123,7 +133,12 @@ struct ProjectData {
     var name: String { request["softwareName"]?.jsString ?? "" }
     var status: String { state["status"]?.string ?? "idle" }
     var runningFlag: Bool { json["running"].isTruthy }
-    var readOnly: Bool { state["readOnly"].isTruthy }
+    /// 只有交付包的历史项目
+    var historyReadOnly: Bool { state["readOnly"].isTruthy }
+    /// 已提交：只读，要改先取消
+    var submitted: Bool { isSubmitted(state) }
+    var submittedAt: String? { state["submitted"]?["at"]?.string }
+    var readOnly: Bool { historyReadOnly || submitted }
     var origin: String { state["origin"]?.string ?? "created" }
     var plan: JSON? { json["plan"].truthyValue }
     var content: JSON? { json["content"].truthyValue }

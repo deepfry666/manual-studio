@@ -124,7 +124,7 @@ public func buildBundle(_ input: BuildInput, onLog: @Sendable (String) async -> 
         await onLog("生成代码 Word（\(collected.fileCount) 个文件，\(collected.lineCount) 行）")
         if let template = collected.wordTemplate {
             guard withPdf else { throw StudioError("请安装 LibreOffice 以生成指南 PDF；代码模板要求完整PDF交付包，正式交付包未改动") }
-            await onLog("使用 Word 模板：\(template.nonEmptyLines) 行非空代码，正好60页打印布局")
+            await onLog("使用 Word 模板：\(template.lines.count) 段代码，印出来正好 60 页 × 每页 50 行")
             pdfFonts.append(("code", try await renderCodeTemplate(template, project: staging, software: softwareName, fontPlan: input.fontPlan)))
         } else {
             try createCodeDocx(project: staging, software: softwareName, body: collected.body)
@@ -145,7 +145,7 @@ public func buildBundle(_ input: BuildInput, onLog: @Sendable (String) async -> 
         let label = languageLabelFor(code.extensions)
         if !label.isEmpty { fields["language"] = label == "Java" ? "JAVA" : label }
     }
-    try createGuideTxt(project: staging, software: softwareName, overview: input.content["cover"]?["overview"]?.jsString ?? "", fields: fields, sourceLines: code?.lineCount ?? 0)
+    try createGuideTxt(project: staging, software: softwareName, overview: input.content["cover"]?["overview"]?.jsString ?? "", fields: fields)
 
     await onLog("校验交付包")
     let withCode = code != nil
@@ -153,12 +153,12 @@ public func buildBundle(_ input: BuildInput, onLog: @Sendable (String) async -> 
     warnings.append(contentsOf: code?.warnings ?? [])
     for (kind, result) in pdfFonts { if let warning = pdfFontWarning(kind, result) { warnings.append(warning) } }
     if !errors.isEmpty {
-        throw StudioError("交付校验没有通过（正式交付包未改动，诊断文件在 \(staging)）：\n- \(errors.joined(separator: "\n- "))")
+        throw StudioError("交付校验没有通过（正式交付包未改动）：\n- \(errors.joined(separator: "\n- "))" + diagnosticsTag(staging))
     }
 
     var manifest = buildManifest(softwareName: softwareName, content: input.content, withPdf: withPdf, withCode: withCode, code: code, codeSource: input.codeSource, provenance: input.provenance)
     if let template = code?.wordTemplate {
-        manifest["codePagination"] = .obj(["templateSha256": .string(template.sha256), "targetPages": .number(60), "nonEmptyLines": .number(Double(template.nonEmptyLines)), "pdfPages": JSON.maybe(countPdfPages(Path.join(stagingBundle, "\(softwareName)\(CODE_SUFFIX).pdf")))])
+        manifest["codePagination"] = .obj(["templateSha256": .string(template.sha256), "targetPages": .number(60), "rowsPerPage": .number(Double(CodeLayout.rowsPerPage)), "sourceRows": .number(Double(template.sourceRows)), "nonEmptyLines": .number(Double(template.nonEmptyLines)), "pdfPages": JSON.maybe(countPdfPages(Path.join(stagingBundle, "\(softwareName)\(CODE_SUFFIX).pdf")))])
     }
     if withPdf { manifest["pdfFonts"] = summarizeFonts(pdfFonts) }
     let regionIndex = buildRegionIndex(softwareName: softwareName, content: input.content, regionFill: regionFill, withPdf: withPdf, withCode: withCode, code: code)

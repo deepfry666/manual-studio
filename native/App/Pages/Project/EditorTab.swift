@@ -144,7 +144,9 @@ struct EditorTab: View {
 
     var statusLine: some View {
         HStack(spacing: 8) {
-            if data.readOnly {
+            if data.submitted {
+                Text("已提交，只能查看；要修改请先取消已提交").foregroundStyle(.secondary)
+            } else if data.readOnly {
                 Text("只读项目，不能修改").foregroundStyle(.secondary)
             } else if running {
                 Label("正在运行，跑完后才能修改", systemImage: "hourglass").foregroundStyle(.secondary)
@@ -201,7 +203,11 @@ struct EditorTab: View {
                 if let file = screen.file {
                     ScreenImage(path: file, version: screen.mtime)
                         .onTapGesture { preview = screen }
-                        .help("点击查看大图")
+                        // 和访达一样：选中（Tab 键移过来）后按空格看大图
+                        .focusable()
+                        .focusEffectDisabled(false)
+                        .onKeyPress(.space) { preview = screen; return .handled }
+                        .help("点击或按空格查看大图")
                 } else {
                     Rectangle().fill(.quaternary)
                     Text(running ? "生成中…" : "未生成").foregroundStyle(.secondary)
@@ -308,7 +314,7 @@ struct EditorTab: View {
                     Text("图\(index + 1)").fontWeight(.semibold)
                     Text(screen.title).foregroundStyle(.secondary)
                 }
-                Text("截图验收后会自动写这一屏的说明。").foregroundStyle(.secondary)
+                Text("截图检查通过后会自动写这一屏的说明。").foregroundStyle(.secondary)
             }
         }
     }

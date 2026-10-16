@@ -8,9 +8,9 @@ private let SCREEN_STATUS: [String: (label: String, tone: Tone)] = [
     "regenerating": ("重新生成", .orange),
     "generated": ("已出图", .green),
     "failed": ("失败", .red),
-    "waiting-check": ("待验收", .neutral),
-    "checking": ("验收中", .blue),
-    "passed": ("验收通过", .green),
+    "waiting-check": ("待检查", .neutral),
+    "checking": ("检查中", .blue),
+    "passed": ("检查通过", .green),
 ]
 
 /// 运行中的实时进度：当前步骤、已用时、预计剩余、每张截图的状态。

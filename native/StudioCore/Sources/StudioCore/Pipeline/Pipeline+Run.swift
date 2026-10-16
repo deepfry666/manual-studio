@@ -68,6 +68,7 @@ extension Pipeline {
 
     /// 包一层：管理实时进度，结束后记录这次运行用时。
     func runInner(_ dir: String, _ options: RunOptions) async -> RunResult {
+        if isSubmitted(try? projectStore.read(dir)) { return RunResult(status: "failed", error: "已提交的项目只读，没有运行；要修改请先取消已提交") }
         let startedAt = isoNow()
         let tracker = StepTracker()
         let initial: JSON = .obj([
@@ -243,6 +244,7 @@ extension Pipeline {
     /// 为 false 保留手改的交付包，这次不更新（以后再更新时还会再问）。
     @discardableResult
     public func resolveExternalEdits(_ dir: String, overwrite: Bool) async throws -> Task<RunResult, Never>? {
+        try assertEditable(dir)
         try assertIdle(dir)
         if overwrite {
             try await update(dir) { state in
@@ -261,6 +263,7 @@ extension Pipeline {
     }
 
     public func confirmPlan(_ dir: String) async throws -> Task<RunResult, Never> {
+        try assertEditable(dir)
         try await update(dir) { state in
             state.mergeChild("steps", "plan", ["status": "done"])
             appendLog(&state, "规划已确认")
@@ -269,6 +272,7 @@ extension Pipeline {
     }
 
     public func savePlanScreen(_ dir: String, _ id: String, _ patch: JSON) async throws {
+        try assertEditable(dir)
         try assertScreenId(id)
         try assertIdle(dir)
         let paths = projectPaths(dir)
@@ -289,6 +293,7 @@ extension Pipeline {
     }
 
     public func savePrompt(_ dir: String, _ id: String, _ prompt: String) async throws {
+        try assertEditable(dir)
         try assertScreenId(id)
         try assertIdle(dir)
         try FS.writeAtomic(projectPaths(dir).promptFile(id), ensureBrandBan(prompt))
@@ -297,12 +302,14 @@ extension Pipeline {
     }
 
     public func regenerateScreen(_ dir: String, _ id: String) throws -> Task<RunResult, Never> {
+        try assertEditable(dir)
         try assertScreenId(id)
         return start(dir, RunOptions(from: "images", forceScreens: [id]))
     }
 
     /// 换回以前用过的截图（来自归档）。当前的图同样先归档，所以还能再换回来。
     public func restoreScreen(_ dir: String, _ id: String, _ file: String) async throws {
+        try assertEditable(dir)
         try assertScreenId(id)
         try assertIdle(dir)
         guard screenHistory(dir, id).contains(where: { $0["file"]?.string == file }) else { throw StudioError("找不到这张旧截图") }
@@ -318,6 +325,7 @@ extension Pipeline {
 
     /// 用另一张图替换这一屏：当前的图先归档，换上后要重新验收，说明按新图重写（人工改过的除外）
     func replaceScreenImage(_ dir: String, _ id: String, with file: String, log message: String) async throws -> String {
+        try assertEditable(dir)
         let paths = projectPaths(dir)
         let target = paths.screenFile(id)
         if FS.exists(target) {
@@ -346,6 +354,7 @@ extension Pipeline {
     }
 
     public func useAlternate(_ dir: String, _ id: String, _ file: String) async throws {
+        try assertEditable(dir)
         try assertScreenId(id)
         try assertIdle(dir)
         guard listAlternates(dir, id).contains(where: { $0["file"]?.string == file }) else { throw StudioError("备选图不存在") }
@@ -363,6 +372,7 @@ extension Pipeline {
     }
 
     public func manualGate(_ dir: String, _ id: String, _ passed: Bool) async throws {
+        try assertEditable(dir)
         try assertScreenId(id)
         try assertIdle(dir)
         let state = try readState(dir)
@@ -390,6 +400,7 @@ extension Pipeline {
     /// screens：[{ id, title?, text? }]
     /// design：整章设计说明（[{title, text}]），nil 表示不改
     public func saveContent(_ dir: String, overview: String?, screens patches: [JSON], design: [JSON]? = nil) async throws {
+        try assertEditable(dir)
         try assertIdle(dir)
         let paths = projectPaths(dir)
         guard var content = try FS.readJSON(paths.content) else { throw StudioError("还没有文案") }
@@ -437,6 +448,7 @@ extension Pipeline {
     }
 
     public func rewriteContent(_ dir: String, _ ids: [String]) async throws -> Task<RunResult, Never> {
+        try assertEditable(dir)
         for id in ids where id != "overview" { try assertScreenId(id) }
         try await update(dir) { state in
             for id in ids where state["screens"]?[id] != nil { state["screens"]?[id]?["textEdited"] = false }
@@ -447,6 +459,7 @@ extension Pipeline {
 
     @discardableResult
     public func updateRequest(_ dir: String, _ patch: JSON) async throws -> JSON {
+        try assertEditable(dir)
         try assertIdle(dir)
         let state = try readState(dir)
         let before = state["request"] ?? .emptyObject
@@ -506,6 +519,7 @@ extension Pipeline {
 
     /// 历史项目没有代码来源时：改用总设置里的代码来源（下次生成交付包时生效）。
     public func useGlobalCodeSource(_ dir: String) async throws {
+        try assertEditable(dir)
         try assertIdle(dir)
         let settings = try await settingsStore.get()
         if settings.codeSource.path.isEmpty { throw StudioError("总设置里还没有代码来源，先到「设置 → 代码来源」里选择") }
@@ -534,6 +548,7 @@ extension Pipeline {
 
     /// 重新导出PDF；旧指南图片超宽时先用已有内容重排Word，TXT和截图不动。
     public func reexportPdfs(_ dir: String) async throws -> JSON {
+        try assertEditable(dir)
         try assertIdle(dir)
         let handle = RunHandle(cancellable: false)
         let job = Task<JSON, Error> {
@@ -582,6 +597,7 @@ extension Pipeline {
     /// target：指定改哪里（screen-XX / all / overview / design），nil 表示让软件判断。
     @discardableResult
     public func addFeedback(_ dir: String, _ text: String, target: String? = nil) async throws -> JSON {
+        try assertEditable(dir)
         let value = text.jsTrimmed
         if value.isEmpty { throw StudioError("修改意见是空的") }
         let item: JSON = .obj(["id": .string(randomHex(4)), "text": .string(value), "at": .string(isoNow()), "status": "pending", "target": JSON.maybe(target.flatMap { $0.isEmpty ? nil : $0 })])
@@ -593,6 +609,7 @@ extension Pipeline {
     }
 
     public func editFeedback(_ dir: String, _ id: String, _ text: String) async throws {
+        try assertEditable(dir)
         let value = text.jsTrimmed
         if value.isEmpty { throw StudioError("修改意见是空的") }
         try await update(dir) { draft in
@@ -604,6 +621,7 @@ extension Pipeline {
     }
 
     public func setFeedbackTarget(_ dir: String, _ id: String, _ target: String?) async throws {
+        try assertEditable(dir)
         try await update(dir) { draft in
             draft["feedback"] = .array(draft["feedback"].items.map { item in
                 guard item["id"]?.string == id, item["status"]?.string == "pending" else { return item }
@@ -616,6 +634,7 @@ extension Pipeline {
     }
 
     public func removeFeedback(_ dir: String, _ id: String) async throws {
+        try assertEditable(dir)
         try await update(dir) { draft in
             draft["feedback"] = .array(draft["feedback"].items.filter { $0["id"]?.string != id })
             draft["feedbackPlan"] = .null
@@ -624,6 +643,7 @@ extension Pipeline {
 
     /// 把清单里所有未处理的意见一起交给大模型，整理成「改哪几张图、重写哪几段文字」。
     public func analyzeFeedback(_ dir: String) async throws -> JSON {
+        try assertEditable(dir)
         guard let state = try projectStore.read(dir) else { throw StudioError("项目不存在") }
         if state["readOnly"].isTruthy { throw StudioError("只读的历史项目不能修改") }
         let items = state["feedback"].items.filter { $0["status"]?.string == "pending" }
@@ -728,6 +748,7 @@ extension Pipeline {
     /// 按确认后的动作统一修改：先改好所有要重生截图的提示词，再一次运行
     /// （截图同时生成、一起验收、一起重写说明、只构建一次）。actions 是界面上勾选、改过措辞后的动作。
     public func applyFeedback(_ dir: String, actions chosen: [JSON]) async throws -> JSON {
+        try assertEditable(dir)
         try assertIdle(dir)
         let entered: Bool = applying.withLock { set in set.insert(dir).inserted }
         if !entered { throw StudioError("正在处理上一次的修改") }
@@ -898,4 +919,9 @@ extension Pipeline {
             for (step, hash) in computed { draft.mergeChild("steps", step, .obj(["inputHash": .string(hash)])) }
         }
     }
+}
+
+extension Pipeline {
+    /// 已提交的项目只读
+    func assertEditable(_ dir: String) throws { try assertNotSubmitted(try projectStore.read(dir)) }
 }

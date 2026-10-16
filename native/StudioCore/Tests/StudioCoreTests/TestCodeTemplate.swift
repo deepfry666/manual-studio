@@ -16,10 +16,10 @@ let testCodeTemplatePath: String = {
 private let W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 private let R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 
-private func codeLine(_ index: Int) -> String {
+private func codeLine(_ index: Int, _ variant: Int) -> String {
     let module = index / 400
     switch index % 9 {
-    case 0: return "package com.example.demo.module\(module);"
+    case 0: return "package com.example.demo\(variant == 0 ? "" : "\(variant)").module\(module);"
     case 1: return "import com.example.demo.common.Result\(module);"
     case 2: return "public class DemoController\(index) {"
     case 3: return "    private final DemoService service\(index) = new DemoService();"
@@ -31,18 +31,19 @@ private func codeLine(_ index: Int) -> String {
     }
 }
 
-func makeTestCodeTemplate() -> Data {
+/// variant 不同，代码内容就不同（测试多个模板用）；lineCount 是段落数。
+func makeTestCodeTemplate(variant: Int = 0, lineCount: Int = 3322) -> Data {
     let runProps = #"<w:rPr><w:rFonts w:ascii="新宋体" w:hAnsi="新宋体" w:eastAsia="新宋体" w:cs="新宋体"/><w:sz w:val="18"/><w:szCs w:val="18"/></w:rPr>"#
     let paraProps = #"<w:pPr><w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/><w:jc w:val="both"/></w:pPr>"#
     let blanks = Set((0..<93).map { 17 + 35 * $0 })
     var body = ""
-    for index in 0..<3322 {
+    for index in 0..<lineCount {
         if blanks.contains(index) {
             body += index % 2 == 0
                 ? "<w:p>\(paraProps)<w:r>\(runProps)<w:t xml:space=\"preserve\">    </w:t></w:r></w:p>"
                 : "<w:p>\(paraProps)</w:p>"
         } else {
-            body += "<w:p>\(paraProps)<w:r>\(runProps)<w:t xml:space=\"preserve\">\(xmlText(codeLine(index)))</w:t></w:r></w:p>"
+            body += "<w:p>\(paraProps)<w:r>\(runProps)<w:t xml:space=\"preserve\">\(xmlText(codeLine(index, variant)))</w:t></w:r></w:p>"
         }
     }
     let sect = #"<w:sectPr><w:headerReference r:id="rId5" w:type="default"/><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1200" w:bottom="1440" w:left="1200" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr>"#

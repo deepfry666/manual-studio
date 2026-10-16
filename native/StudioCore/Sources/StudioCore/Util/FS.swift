@@ -10,6 +10,14 @@ public struct StudioError: Error, LocalizedError, Sendable, CustomStringConverti
     public var description: String { message }
 }
 
+/// 报错里不直接写临时文件夹路径（对用户没用），而是挂一个标记，界面上换成「查看诊断文件」按钮。
+public func diagnosticsTag(_ path: String) -> String { "\n[诊断文件:\(path)]" }
+
+public func splitDiagnostics(_ message: String) -> (text: String, path: String?) {
+    guard let match = Rx.match(#"\n?\[诊断文件:([^\]]+)\]\s*$"#, message), let path = match[1] else { return (message, nil) }
+    return (message.replacingOccurrences(of: match[0] ?? "", with: ""), path)
+}
+
 /// 错误的中文说明（和 JS 的 error.message 一致）。
 public func messageOf(_ error: Error) -> String {
     if let error = error as? LocalizedError, let text = error.errorDescription { return text }

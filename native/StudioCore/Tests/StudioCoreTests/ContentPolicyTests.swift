@@ -40,9 +40,10 @@ struct ContentPolicyTests {
         #expect(edited.contains("Revision applied: 蓝色按钮"))
         let txtPath = Path.join(dir, "日期验收账本 V1.0", "日期验收账本 V1.0指南.txt")
         let txt = try FS.readText(txtPath)
-        #expect(!txt.contains("【该软件的运行平台/操作系统】"))
-        #expect(!txt.contains("【运行的硬件环境】"))
-        #expect(!txt.contains("Android"))
+        // TXT 和原始模板一样 9 行（运行环境照设置写，只有指南正文不写平台）
+        #expect(txt.contains("【运行的硬件环境】安卓机，8核处理器，ROM 64GB"))
+        #expect(txt.contains("【该软件的运行平台/操作系统】Android操作系统5.0版以上"))
+        #expect(txt.contains("【源程序量】13534行"))
         let guidePath = Path.join(dir, "日期验收账本 V1.0", "日期验收账本 V1.0指南.docx")
         let word = try ZipReader(FS.read(guidePath))
         #expect(String(decoding: try #require(try word.read("word/document.xml")), as: UTF8.self).contains("2026年10月15日"))

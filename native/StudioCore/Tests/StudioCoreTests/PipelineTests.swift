@@ -88,10 +88,11 @@ struct PipelineTests {
         if withPdf { expected += ["测试记账本 V1.0指南.pdf", "测试记账本 V1.0指南_代码-（JAVA）.pdf"] }
         #expect((FS.list(bundle) ?? []).sorted() == expected.sorted())
 
-        // TXT：环境字段与旧模板一致，源程序量是代码来源的真实行数（A.java 4 行 + B.java 5 行）
+        // TXT：和原始模板一样 9 行，源程序量固定写设置里的数（1.6.0 起）
         let txt = try FS.readText(Path.join(bundle, "测试记账本 V1.0指南.txt"))
         #expect(txt.hasPrefix("【开发的硬件环境】CPU类型：Intel英特尔酷睿i5-4590\r\n"))
-        #expect(txt.contains("【源程序量】9行\r\n"))
+        #expect(txt.contains("【运行的硬件环境】安卓机，8核处理器，ROM 64GB\r\n"))
+        #expect(txt.contains("【源程序量】13534行\r\n"))
         #expect(txt.contains("【编程语言】JAVA"))
 
         // 代码文档只来自代码来源（A 在 B 前，不含 README）
@@ -179,7 +180,7 @@ struct PipelineTests {
         let files = FS.list(Path.join(dir, "无代码测试 V1.0")) ?? []
         #expect(files.allSatisfy { !$0.contains("_代码-（JAVA）") }, "\(files)")
         let txt = try FS.readText(Path.join(dir, "无代码测试 V1.0", "无代码测试 V1.0指南.txt"))
-        #expect(txt.contains("【源程序量】\r\n"))
+        #expect(txt.contains("【源程序量】13534行\r\n"), "没有代码文档也照原始模板写")
         let project = try await ctx.project(dir)
         #expect(project["state"]?["warnings"].items.contains { $0.jsString.contains("没有代码来源") } == true)
         // 只重新导出 PDF（修正字体）：Word 不动，旧 PDF 归档，核对通过

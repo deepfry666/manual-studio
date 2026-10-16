@@ -2,13 +2,13 @@ import StudioCore
 import SwiftUI
 
 func gateTag(_ gate: JSON?) -> (String, Tone) {
-    guard let gate else { return ("未验收", .neutral) }
+    guard let gate else { return ("未检查", .neutral) }
     switch gate["status"]?.string ?? "" {
-    case "passed": return (gate["method"]?.string == "imported-receipt" ? "沿用历史回执" : "验收通过", .green)
+    case "passed": return (gate["method"]?.string == "imported-receipt" ? "沿用历史核对记录" : "检查通过", .green)
     case "manual-passed": return ("人工确认通过", .green)
-    case "failed": return ("验收不通过", .red)
+    case "failed": return ("检查没通过", .red)
     case "needs-manual": return ("待人工确认", .orange)
-    case "error": return ("验收出错", .red)
+    case "error": return ("检查出错", .red)
     default: return (gate["status"].text, .neutral)
     }
 }
@@ -23,7 +23,7 @@ struct ScreenPreviewSheet: View {
             HStack {
                 Text("\(screen.id) · \(screen.title)").font(.title2.weight(.semibold))
                 Spacer()
-                Button("关闭") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("关闭") { dismiss() }.keyboardShortcut(.cancelAction).help("关闭（Esc 或空格）")
             }
             HStack(alignment: .top, spacing: 20) {
                 ScreenImage(path: screen.file, version: screen.mtime)
@@ -32,7 +32,7 @@ struct ScreenPreviewSheet: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {
                         SettingsGroup {
-                            SettingsRow(label: "验收") { let tag = gateTag(gate); TagView(text: tag.0, tone: tag.1) }
+                            SettingsRow(label: "检查") { let tag = gateTag(gate); TagView(text: tag.0, tone: tag.1) }
                             SettingsRow(label: "线路") { Text("\(screen.state["providerName"]?.string ?? "—")\(screen.state["model"]?.string.map { "（\($0)）" } ?? "")") }
                             SettingsRow(label: "尺寸") { Text(screen.state["width"]?.int.map { "\($0)×\(screen.state["height"]?.int ?? 0)" } ?? "—") }
                             SettingsRow(label: "生成时间") { Text(formatTime(screen.state["generatedAt"]?.string)) }
@@ -50,6 +50,7 @@ struct ScreenPreviewSheet: View {
         }
         .padding(22)
         .frame(width: 960, height: 760)
+        .onKeyPress(.space) { dismiss(); return .handled }
     }
 }
 
@@ -91,7 +92,7 @@ struct AlternatesSheet: View {
                 Spacer()
                 Button("关闭") { dismiss() }.keyboardShortcut(.cancelAction)
             }
-            Text("补发时另一条线路出的图，换上后要重新验收。").foregroundStyle(.secondary)
+            Text("另一条线路同时出的备选图，换上后要重新检查。").foregroundStyle(.secondary)
             ScrollView {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 140), spacing: 16)], spacing: 16) {
                     ForEach(screen.alternates, id: \.self) { item in
@@ -121,7 +122,7 @@ struct ScreenHistorySheet: View {
                 Spacer()
                 Button("关闭") { dismiss() }.keyboardShortcut(.cancelAction)
             }
-            Text("换回后要重新验收，这一屏的说明会按换回的截图重写（人工改过的除外）。现在这张也会存进来，随时能再换。").foregroundStyle(.secondary)
+            Text("换回后要重新检查，这一屏的说明会按换回的截图重写（人工改过的除外）。现在这张也会存进来，随时能再换。").foregroundStyle(.secondary)
             ScrollView {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 16)], spacing: 16) {
                     VStack(spacing: 8) {

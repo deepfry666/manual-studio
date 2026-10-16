@@ -1,8 +1,6 @@
 import StudioCore
 import SwiftUI
 
-private let CODE_EXTENSIONS = [".java", ".kt", ".swift", ".dart", ".js", ".ts", ".vue", ".py", ".go", ".cs"]
-
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
 
@@ -10,7 +8,7 @@ struct SettingsView: View {
         @Bindable var model = model
         Group {
             switch model.settingsTab {
-            case "code": PageScroll(maxWidth: 1000) { CodeSourceSettings() }
+            case "code": PageScroll(maxWidth: 1000) { CodeTemplateSettings() }
             case "pdf": PageScroll(maxWidth: 1000) { PdfSettings() }
             case "txt": PageScroll(maxWidth: 1000) { TxtSettings() }
             case "import": ImportPanel()
@@ -22,9 +20,9 @@ struct SettingsView: View {
             ToolbarItem(placement: .principal) {
                 Picker("", selection: $model.settingsTab) {
                     Text("通用").tag("general")
-                    Text("代码来源").tag("code")
+                    Text("代码模板").tag("code")
                     Text("PDF 与字体").tag("pdf")
-                    Text("TXT 字段").tag("txt")
+                    Text("TXT").tag("txt")
                     Text("导入历史项目").tag("import")
                 }
                 .pickerStyle(.segmented)
@@ -119,61 +117,6 @@ struct GeneralSettings: View {
     }
 }
 
-struct CodeSourceSettings: View {
-    @Environment(AppModel.self) private var model
-    @State private var info: JSON?
-
-    var body: some View {
-        let source = model.settings.codeSource
-        VStack(alignment: .leading, spacing: 18) {
-            SettingsGroup(title: "代码来源", footer: "所有项目共用。项目第一次生成交付包时会记下当时的来源，之后修改不影响已完成的项目。") {
-                SettingsRow(label: "源码 / Word 模板", info: "支持源码文件夹、TXT 或代码 Word（.docx）。Word 模板保留代码正文，非空代码超过3,000行；代码PDF采用固定60页打印布局，不符合要求时停止交付。") {
-                    PathText(path: source.path).frame(maxWidth: 360, alignment: .trailing)
-                    Button("选择…") {
-                        if let picked = Panels.choosePath("选择源码文件夹、TXT 或代码 Word 模板（.docx）", at: source.path) {
-                            if Path.extname(picked).lowercased() == ".docx" {
-                                importTemplate(picked)
-                            } else {
-                                model.saveSettings(["codeSource": .obj(["path": .string(picked), "extensions": JSON(source.extensions)])])
-                            }
-                        }
-                    }
-                    if !source.path.isEmpty {
-                        Button("清除", role: .destructive) { model.saveSettings(["codeSource": .obj(["path": "", "extensions": JSON(source.extensions)])]) }.buttonStyle(.borderless)
-                    }
-                }
-                SettingsRow(label: "文件类型", vertical: true) {
-                    TokenEditor(tokens: Binding(get: { source.extensions }, set: { model.saveSettings(["codeSource": .obj(["path": .string(source.path), "extensions": JSON($0)])]) }), suggestions: CODE_EXTENSIONS)
-                }
-                SettingsRow(label: "跳过的文件夹", vertical: true) {
-                    TokenEditor(tokens: Binding(get: { model.settings.codeDefaults.excludeDirs }, set: { model.saveSettings(["codeDefaults": ["excludeDirs": JSON($0)]]) }))
-                }
-            }
-            if let info {
-                SettingsGroup(title: "统计") {
-                    SettingsRow(label: "文件") { Text("\(info["fileCount"]?.int ?? 0) 个") }
-                    SettingsRow(label: "行数") { Text("\((info["lineCount"]?.int ?? 0).formatted()) 行") }
-                    SettingsRow(label: "代码文档", info: info["wordTemplate"].isTruthy ? "实际PDF必须正好60页，非空代码超过3,000行才交付。" : "按新宋体9磅估算，用替代字体时页数会有出入。") { Text("\(info["wordTemplate"].isTruthy ? "正好" : "约") \(info["estimatedPages"]?.int ?? 0) 页") }
-                    if !info["warnings"].items.isEmpty {
-                        SettingsRow(label: "提醒", hint: info["warnings"].items.map(\.jsString).joined(separator: "；"))
-                    }
-                }
-            }
-        }
-        .task(id: "\(source.path)|\(source.extensions.joined(separator: ","))") {
-            guard !source.path.isEmpty else { info = nil; return }
-            info = try? await model.core?.inspectCodeSource(path: source.path, extensions: source.extensions)
-        }
-    }
-
-    private func importTemplate(_ path: String) {
-        Task {
-            await model.perform { try await model.core?.importCodeTemplate(path) }
-            await model.reloadSettings()
-        }
-    }
-}
-
 struct PdfSettings: View {
     @Environment(AppModel.self) private var model
     @State private var fonts: JSON?
@@ -235,6 +178,16 @@ struct PdfSettings: View {
 struct TxtSettings: View {
     @Environment(AppModel.self) private var model
 
+    var guidePreview: String {
+        let f = model.settings.txtFields
+        return [
+            "【开发的硬件环境】\(f["devHardware"] ?? "")", "【运行的硬件环境】\(f["runHardware"] ?? "")",
+            "【开发该软件的操作系统】\(f["devOs"] ?? "")", "【软件开发环境/开发工具】\(f["devTools"] ?? "")",
+            "【该软件的运行平台/操作系统】\(f["runPlatform"] ?? "")", "【软件运行支撑环境/支持软件】\(f["runSupport"] ?? "")",
+            "【编程语言】\(f["language"] ?? "")", "【源程序量】\(f["sourceLines"] ?? "")", "【软件的主要功能】", "（这里接封面介绍）",
+        ].joined(separator: "\n")
+    }
+
     func field(_ key: String) -> some View {
         SettingsRow(label: TXT_LABELS.first { $0.key == key }?.label ?? key) {
             CommitTextField(placeholder: "", value: model.settings.txtFields[key] ?? "") { model.saveSettings(["txtFields": .obj([key: .string($0)])]) }
@@ -245,9 +198,15 @@ struct TxtSettings: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .top, spacing: 20) {
-                SettingsGroup(title: "开发环境") { ForEach(["devHardware", "devOs", "devTools", "language"], id: \.self) { field($0) } }
+                SettingsGroup(title: "开发环境") { ForEach(["devHardware", "devOs", "devTools"], id: \.self) { field($0) } }
+                SettingsGroup(title: "运行环境") { ForEach(["runHardware", "runPlatform", "runSupport"], id: \.self) { field($0) } }
             }
-            Text("TXT 不再输出运行硬件、运行平台和运行支撑环境。【源程序量】按代码来源的实际行数统计；有代码来源时【编程语言】自动判断。").font(.caption).foregroundStyle(.secondary)
+            SettingsGroup(title: "代码", footer: "【源程序量】固定写这里的数，不随代码模板变。用代码模板时【编程语言】自动写 JAVA。单个项目要不一样，在项目的交付页里改。") {
+                ForEach(["language", "sourceLines"], id: \.self) { field($0) }
+            }
+            SettingsGroup(title: "TXT 开头的样子") {
+                Text(guidePreview).font(.system(.callout, design: .monospaced)).textSelection(.enabled).padding(14).frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
     }
 }

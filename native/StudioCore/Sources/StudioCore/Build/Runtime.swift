@@ -99,6 +99,23 @@ public func resetLibreOfficeCache() { sofficeCache.withLock { $0 = nil } }
 /// LibreOffice 同时开多个容易出错，这里排队一个个转。
 private let pdfQueue = SerialQueue()
 
+/// 老的 .doc 代码模板先用 LibreOffice 转成 .docx（在临时文件夹里转，原文件不动）。
+public func convertDocToDocx(_ docPath: String) async throws -> Data {
+    try await pdfQueue.run {
+        guard let soffice = await findLibreOffice() else { throw StudioError("老的 .doc 文件要用 LibreOffice 转换，没有找到 LibreOffice；也可以在 WPS 里另存为 .docx 再加") }
+        let work = try FS.makeTempDirectory(prefix: "manual-studio-doc-")
+        defer { FS.remove(work) }
+        let input = Path.join(work, "template.doc")
+        try FS.copy(docPath, input)
+        try FS.mkdirp(Path.join(work, "profile", "user"))
+        let profileUri = "file:///" + Rx.replace("^/+", in: Path.join(work, "profile"), with: "").replacingOccurrences(of: " ", with: "%20")
+        let result = try await runProcess(soffice, ["--headless", "--nologo", "--nodefault", "--nolockcheck", "-env:UserInstallation=\(profileUri)", "--convert-to", "docx", "--outdir", work, input], timeoutSec: 5 * 60)
+        let output = Path.join(work, "template.docx")
+        guard result.code == 0, (FS.size(output) ?? 0) > 0 else { throw StudioError(".doc 转换失败：\((result.stderr.isEmpty ? result.stdout : result.stderr).jsSlice(-300))") }
+        return try FS.read(output)
+    }
+}
+
 /// DOCX → PDF。fontPairs：这次转换用的字体替换表（写进临时配置目录，不影响平时使用的 LibreOffice）。
 public func convertToPdf(_ docxPath: String, outDir: String, fontPairs: [FontPair] = []) async throws -> String {
     try await pdfQueue.run {
