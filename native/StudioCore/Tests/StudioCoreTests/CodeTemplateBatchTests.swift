@@ -22,7 +22,7 @@ struct CodeTemplateBatchTests {
         let network = MockNetwork() // 没有任何联网处理器；调用网络会报错。
         let dataDir = Path.join(root, "data")
         let core = try await StudioCore(dataDir: dataDir, secrets: MemorySecrets(), http: network)
-        try await core.importCodeTemplate()
+        try await core.importCodeTemplate(testCodeTemplatePath)
         let names = ["历史批量甲 V1.0", "损坏TXT V1.0", "历史批量乙 V1.0"]
         var dirs: [String] = []
         var kept: [(String, Data)] = []
@@ -107,7 +107,7 @@ struct CodeTemplateBatchTests {
         let ctx = try await CoreContext()
         defer { FS.remove(ctx.root) }
         let dir = try await ctx.create("排队旧项目 V1.0")
-        try await ctx.core.importCodeTemplate()
+        try await ctx.core.importCodeTemplate(testCodeTemplatePath)
         await ctx.core.batch.pause()
         await ctx.core.batch.enqueue([dir])
         let before = try #require(try ctx.core.projectStore.read(dir))
@@ -139,7 +139,7 @@ struct CodeTemplateBatchTests {
         let dir = try await fakeBuiltProject(ctx, name, ["\(name)指南.docx", "\(name)指南.txt", "\(name)\(CODE_SUFFIX).docx", "\(name)\(CODE_SUFFIX).pdf"])
         let bundle = projectPaths(dir).bundle(name)
         try FS.write(Path.join(bundle, "\(name)指南.txt"), "【编程语言】JAVA\n【源程序量】2000行\n【软件的主要功能】\n保留原文\n")
-        let source = try ZipReader(FS.read(CodeWordTemplate.bundledPath))
+        let source = try ZipReader(FS.read(testCodeTemplatePath))
         var modified = ZipWriter()
         for entry in source.entries {
             if entry.isDirectory { modified.addDirectory(entry.name); continue }

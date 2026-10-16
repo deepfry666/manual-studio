@@ -585,7 +585,7 @@ public final class StudioCore: @unchecked Sendable {
     }
 
     /// 保存不可变的模板副本，项目锁定后不受下载目录移动或后续模板替换影响。
-    public func importCodeTemplate(_ path: String = CodeWordTemplate.bundledPath) async throws {
+    public func importCodeTemplate(_ path: String) async throws {
         let bytes = try FS.read(path)
         let template = try CodeWordTemplate(data: bytes)
         let target = Path.join(dataDir, "code-templates", "\(template.sha256).docx")

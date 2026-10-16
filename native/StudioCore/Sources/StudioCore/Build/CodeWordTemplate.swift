@@ -19,10 +19,6 @@ public struct CodeWordTemplate: Sendable {
     }
     public var sha256: String { sha256Hex(data) }
 
-    public static var bundledPath: String {
-        Bundle.module.url(forResource: "CodeTemplate", withExtension: "docx")!.path
-    }
-
     public init(data: Data) throws {
         guard data.count <= MAX_CODE_BYTES else { throw StudioError("Word 代码模板超过 30MB") }
         let zip = try ZipReader(data)

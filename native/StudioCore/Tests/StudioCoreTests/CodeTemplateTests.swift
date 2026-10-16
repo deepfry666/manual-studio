@@ -7,8 +7,8 @@ import Testing
 struct CodeTemplateTests {
     @Test("新模板保留正文、样式和部件，均匀分配成60页，更新页眉")
     func templateFidelity() throws {
-        let original = try FS.read(CodeWordTemplate.bundledPath)
-        let code = try collectCodeSource(path: CodeWordTemplate.bundledPath, extensions: [".java"])
+        let original = try FS.read(testCodeTemplatePath)
+        let code = try collectCodeSource(path: testCodeTemplatePath, extensions: [".java"])
         let template = try #require(code.wordTemplate)
         #expect(code.lineCount == 3322)
         #expect(code.nonEmptyLines == 3229)
@@ -33,7 +33,7 @@ struct CodeTemplateTests {
         #expect(Rx.count("<w:pageBreakBefore(?:\\s[^>]*)?/>", xml) == 59)
         let header = String(decoding: try #require(try after.read("word/header1.xml")), as: UTF8.self)
         #expect(header.contains(name))
-        #expect(!header.contains("某项目"))
+        #expect(!header.contains(TEST_TEMPLATE_HEADER))
         #expect(header.contains(" PAGE "), "页眉右上角要有页码域")
         #expect(Rx.count("_ManualStudioPageNo", header) == 1)
         // 已生成的代码 Word 能再当模板读回，再次生成不会叠加第二个页码
@@ -45,7 +45,7 @@ struct CodeTemplateTests {
         #expect(Rx.count("_ManualStudioPageNo", header2) == 1)
         #expect(Rx.count("<w:tabs>", header2) == 1)
         #expect(try codeExactPages(target) == 60)
-        #expect(try FS.read(CodeWordTemplate.bundledPath) == original)
+        #expect(try FS.read(testCodeTemplatePath) == original)
     }
 
     @Test("不足页数的PDF拒绝交付，损坏Word不会被当作源码")
@@ -65,11 +65,11 @@ struct CodeTemplateTests {
     func batchBuild() async throws {
         let ctx = try await CoreContext()
         defer { FS.remove(ctx.root) }
-        try await ctx.core.importCodeTemplate()
+        try await ctx.core.importCodeTemplate(testCodeTemplatePath)
         let settings = try await ctx.core.settingsStore.get()
         let sourcePath = settings.codeSource.path
         #expect(Path.isInside(ctx.dataDir, sourcePath))
-        #expect(try FS.read(sourcePath) == FS.read(CodeWordTemplate.bundledPath))
+        #expect(try FS.read(sourcePath) == FS.read(testCodeTemplatePath))
         let restored = try await SettingsStore(dataDir: ctx.dataDir).get()
         #expect(restored.codeSource.path == sourcePath)
         let a = try await ctx.create("模板批量甲 V1.0", screenCount: 1)

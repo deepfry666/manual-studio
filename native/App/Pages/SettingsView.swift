@@ -130,7 +130,7 @@ struct CodeSourceSettings: View {
                 SettingsRow(label: "源码 / Word 模板", info: "支持源码文件夹、TXT 或代码 Word（.docx）。Word 模板保留代码正文，非空代码超过3,000行；代码PDF采用固定60页打印布局，不符合要求时停止交付。") {
                     PathText(path: source.path).frame(maxWidth: 360, alignment: .trailing)
                     Button("选择…") {
-                        if let picked = Panels.choosePath("选择源码文件夹或文件", at: source.path) {
+                        if let picked = Panels.choosePath("选择源码文件夹、TXT 或代码 Word 模板（.docx）", at: source.path) {
                             if Path.extname(picked).lowercased() == ".docx" {
                                 importTemplate(picked)
                             } else {
@@ -141,9 +141,6 @@ struct CodeSourceSettings: View {
                     if !source.path.isEmpty {
                         Button("清除", role: .destructive) { model.saveSettings(["codeSource": .obj(["path": "", "extensions": JSON(source.extensions)])]) }.buttonStyle(.borderless)
                     }
-                }
-                SettingsRow(label: "内置代码模板", info: "软件自带的 Java 代码 Word 模板：3,322 行，其中 3,229 行非空代码；代码 PDF 正好 60 页，页眉为软件名和页码。") {
-                    Button("使用内置模板") { importTemplate(CodeWordTemplate.bundledPath) }
                 }
                 SettingsRow(label: "文件类型", vertical: true) {
                     TokenEditor(tokens: Binding(get: { source.extensions }, set: { model.saveSettings(["codeSource": .obj(["path": .string(source.path), "extensions": JSON($0)])]) }), suggestions: CODE_EXTENSIONS)
