@@ -16,3 +16,4 @@ xcuserdata/
 /.build/
 # 含客户项目名的本机清单，不上传
 /docs/批量应用代码模板结果-*.md
+/native/.build/

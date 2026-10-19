@@ -151,7 +151,9 @@ public final class Pipeline: @unchecked Sendable {
             }
             return result
         } catch {
-            await llmLog.append(.obj(["step": .string(step), "projectDir": .string(dir), "vendorId": .string(llm.vendor.id), "model": .string(llm.model), "ok": false, "durationMs": .number(nowMs() - started), "errorMessage": .string(messageOf(error).jsSlice(0, 300))]))
+            let detail = (error as? LlmError)?.detail
+            await llmLog.append(.obj(["step": .string(step), "projectDir": .string(dir), "vendorId": .string(llm.vendor.id), "model": .string(llm.model), "ok": false, "durationMs": .number(nowMs() - started), "errorMessage": .string(messageOf(error).jsSlice(0, 400)), "errorKind": JSON.orNull((error as? LlmError)?.kind), "errorDetail": JSON.orNull(detail?.jsSlice(0, 6000))]))
+            if let detail { try? await log(dir, "「\(LLM_STEPS[step]?.label ?? step)」失败现场（模型回的内容摘录）：\n\(detail.jsSlice(0, 1500))", "warn") }
             throw error
         }
     }
@@ -204,11 +206,14 @@ public final class Pipeline: @unchecked Sendable {
         let planState = ctx.state
         let plan = try await callLlm("plan", dir, ChatJsonRequest(
             system: PLAN_SYSTEM,
-            user: planUserPrompt(softwareName: name, screenCount: screenCount, emphasis: request["emphasis"].text, notes: request["notes"].text, platform: platform) + platformNeutralRule(name, forPlan: true) + contentDateRule(ctx.state),
+            user: planUserPrompt(softwareName: name, screenCount: screenCount, emphasis: request["emphasis"].text, notes: request["notes"].text, platform: platform) + platformNeutralRule(name, forPlan: true) + contentDateRule(ctx.state) + RED_LINE_RULE,
             schema: PLAN_SCHEMA,
             check: { planCheck($0, softwareName: name, screenCount: screenCount) + platformProblems(name, "规划的用户、流程或界面文字", planVisibleTexts($0)) },
             // 示例数据里的日期在生图前就拦下，比生完图再重生便宜
-            softCheck: { dateProblems(planState, "规划的示例数据或界面描述", planVisibleTexts($0) + $0["screens"].items.map { $0["visualBrief"].text }) },
+            softCheck: {
+                dateProblems(planState, "规划的示例数据或界面描述", planVisibleTexts($0) + $0["screens"].items.map { $0["visualBrief"].text })
+                    + redLineProblems("规划的用户、流程或界面文字", planVisibleTexts($0))
+            },
             temperature: 0.8,
             maxTokens: 8000
         ))
@@ -473,7 +478,7 @@ public final class Pipeline: @unchecked Sendable {
             let requestedChange = state["screens"]?[id]?["requestedChange"]?.string?.jsTrimmed ?? ""
             let result = try await callLlm("gate", dir, ChatJsonRequest(
                 system: GATE_SYSTEM,
-                user: gateUserPrompt(softwareName: softwareName(state), tokens: tokens, screen: screen) + gateChangeQuestion(requestedChange),
+                user: gateUserPrompt(softwareName: softwareName(state), tokens: tokens, screen: screen) + gateChangeQuestion(requestedChange) + GATE_RED_LINE_QUESTION,
                 images: [image],
                 schema: GATE_SCHEMA,
                 temperature: 0.1,
@@ -489,6 +494,13 @@ public final class Pipeline: @unchecked Sendable {
             if !earlyDates.isEmpty {
                 reasons.append("截图里有早于 \(earliestDateOf(state)) 的日期：\(earlyDates.joined(separator: "、"))")
                 retryHints.append("every date shown must be between \(earliestDateOf(state)) and \(contentDateOf(state)) (future plans may be later); the previous image showed earlier dates: \(earlyDates.joined(separator: ", "))")
+            }
+            // 内容红线：看图模型看画面，再按抄下的文字复核；碰到就重生
+            let redTexts = redLineHits(result["visibleText"].items.map(\.jsString) + [result["screenTitle"].text])
+            if result["redLine"] == .bool(true) || !redTexts.isEmpty {
+                let evidence = [result["redLineEvidence"].text] + redTexts
+                reasons.append("截图碰到内容红线：\(evidence.filter { !$0.isEmpty }.joined(separator: "、"))")
+                retryHints.append("remove all government / official / political / vulgar elements: \(evidence.filter { !$0.isEmpty }.joined(separator: ", ")); present it as a personal tool")
             }
             // 修改意见：看图模型判断这次的修改有没有体现在图上，没有就重生
             if !requestedChange.isEmpty, result["changeApplied"] == .bool(false) {

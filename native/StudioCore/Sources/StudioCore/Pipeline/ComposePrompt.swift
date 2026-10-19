@@ -93,7 +93,9 @@ public func ensureContentDateRule(_ prompt: String, _ state: JSON) -> String {
     if let from = clean.range(of: oldMarker), let to = clean.range(of: BRAND_BAN_BLOCK, range: from.upperBound..<clean.endIndex) {
         clean.removeSubrange(from.lowerBound..<to.lowerBound)
     }
-    let rule = start + contentDateRule(state) + platformNeutralRule(state["request"]?["softwareName"].text ?? "") + "\n" + end
+    // 红线只加在 1.6.0 起新建的项目上：旧项目的提示词不变，不会因此把截图全部重生
+    let redLine = (state["request"]?["policyVersion"]?.int ?? 0) >= 2 ? "\n\n" + RED_LINE_IMAGE_RULE : ""
+    let rule = start + contentDateRule(state) + platformNeutralRule(state["request"]?["softwareName"].text ?? "") + redLine + "\n" + end
     let withoutBan = clean.replacingAll(BRAND_BAN_BLOCK, with: "").jsTrimmed
     return ensureBrandBan(withoutBan + "\n\n" + rule)
 }

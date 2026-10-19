@@ -81,8 +81,15 @@ private func codeTemplateTransactionDirectories(_ dataDir: String) throws -> [St
 }
 
 extension StudioCore {
-    /// 对已有交付包只更新代码材料；模板在本批开始时快照，逐项目失败不影响其余项目。
+    /// 对已有交付包只更新代码材料（设置里的默认模板）。
     public func applyCurrentCodeTemplate(_ directories: [String]) async -> JSON {
+        await applyCodeTemplates(directories, mode: "default")
+    }
+
+    /// 对已有交付包只更新代码材料，逐项目失败不影响其余项目。
+    /// mode：keep 各自原来的模板（按新版式重排）；default 设置里的默认模板；fixed 全部换成 templateId；balance 在启用的模板里平均分配。
+    /// 标成「已提交」的项目只读，自动跳过。
+    public func applyCodeTemplates(_ directories: [String], mode: String, templateId: String? = nil) async -> JSON {
         let dirs = uniqued(directories.map(Path.resolve))
         let owner = Path.resolve(dataDir)
         guard codeTemplateBatchOwners.withLock({ $0.insert(owner).inserted }) else {
@@ -92,41 +99,90 @@ extension StudioCore {
         var done: [JSON] = []
         var failed: [String] = []
         var skipped: [String] = []
+        // 进度：开始时告诉界面这批有哪些项目，之后每做完一个报一次结果（界面据此显示等待 / 正在更新 / 已更新 / 失败）
+        emit(.obj(["type": "code-template-batch", "phase": "start", "dirs": JSON(dirs), "current": .null, "index": 0, "total": .number(Double(dirs.count))]))
+        func report(_ dir: String, _ status: String, _ message: String? = nil, reassigned: String? = nil) {
+            emit(.obj(["type": "code-template-item", "projectDir": .string(dir), "status": .string(status), "message": JSON.orNull(message), "reassigned": JSON.orNull(reassigned)]))
+        }
         do {
             guard try codeTemplateTransactionDirectories(dataDir).isEmpty else { throw StudioError("存在尚未恢复的代码模板更新，请重启软件完成恢复后再试") }
+            try? await migrateCodeTemplateLibrary()
             let settings = try await settingsStore.get()
-            guard Path.extname(settings.codeSource.path).lowercased() == ".docx" else {
-                throw StudioError("请先在「设置 → 代码来源」选择新的 Word 代码模板")
+            let library = settings.codeTemplates
+            var usage = codeTemplateUsage(library, settings)
+            if mode == "default" {
+                guard Path.extname(settings.codeSource.path).lowercased() == ".docx" else {
+                    throw StudioError("请先在「设置 → 代码模板」加一个 Word 代码模板")
+                }
             }
-            let bytes = try FS.read(settings.codeSource.path)
-            let template = try CodeWordTemplate(data: bytes)
-            guard template.lines.filter({ !$0.jsTrimmed.isEmpty }).count > 3000 else {
-                throw StudioError("代码模板的非空白代码行必须超过 3000 行")
+            if mode == "fixed" {
+                guard let id = templateId, library.entry(id)?.enabled == true else { throw StudioError("请选一个启用的模板") }
             }
-            let snapshot = Path.join(dataDir, "code-templates", "\(template.sha256).docx")
-            if FS.exists(snapshot) {
-                guard try FS.read(snapshot) == bytes else { throw StudioError("已保存的模板副本被修改，请重新导入") }
-            } else { try FS.writeAtomic(snapshot, bytes) }
-            let source: JSON = ["path": .string(snapshot), "extensions": [".java"]]
             let fontPlan = resolveFontPlan(settings.pdf)
+            var loaded: [String: (JSON, CodeWordTemplate)] = [:]
+            /// 同一份模板只读一次；原模板副本（旧项目记的路径）在内存里整理成新版式
+            func template(at path: String) throws -> (JSON, CodeWordTemplate) {
+                if let cached = loaded[path] { return cached }
+                let template = try CodeWordTemplate(data: FS.read(path))
+                var source: JSON = ["path": .string(path), "extensions": [".java"]]
+                if let entry = library.entry(forPath: path) {
+                    source = codeSourceJSON(dataDir, entry)
+                    let file = codeTemplateFile(dataDir, entry.id)
+                    if !FS.exists(file) { try FS.writeAtomic(file, template.data) }
+                }
+                loaded[path] = (source, template)
+                return (source, template)
+            }
             for (index, dir) in dirs.enumerated() {
                 emit(.obj(["type": "code-template-batch", "current": .string(dir), "index": .number(Double(index)), "total": .number(Double(dirs.count))]))
                 let queued = batch.list().items.contains { $0["projectDir"]?.string == dir && ["queued", "paused", "running"].contains($0["status"]?.string ?? "") }
                 if queued || pipeline.isRunning(dir) {
                     skipped.append("\(Path.basename(dir))：正在运行或排队，请完成或移出队列后重试")
+                    report(dir, "skipped", "正在运行或排队")
+                    continue
+                }
+                guard let state = try? projectStore.read(dir) else { failed.append("\(Path.basename(dir))：项目不存在"); report(dir, "failed", "项目不存在"); continue }
+                if isSubmitted(state) {
+                    skipped.append("\(Path.basename(dir))：已提交，只读")
+                    report(dir, "skipped", "已提交，只读")
                     continue
                 }
                 do {
-                    let result = try await pipeline.applyCodeTemplate(dir, source: source, template: template, fontPlan: fontPlan)
-                    done.append(result.merging(["dir": .string(dir)]))
+                    let current = codeSourceFor(state, settings).source?["path"]?.string ?? ""
+                    let path: String
+                    /// 这次换成了哪个模板（没有 Word 模板的项目自动分的）
+                    var reassigned: String?
+                    switch mode {
+                    case "keep":
+                        if Path.extname(current).lowercased() == ".docx" {
+                            path = current
+                        } else {
+                            // 早期项目用的是纯文字代码或没有代码来源：按轮流平均分给它分一个模板库里的模板
+                            guard let entry = library.pick(&usage) else { throw StudioError("这个项目还没有 Word 模板，模板库里也没有启用的模板可分") }
+                            path = codeTemplateFile(dataDir, entry.id)
+                            reassigned = entry.label
+                        }
+                    case "fixed": path = codeTemplateFile(dataDir, templateId ?? "")
+                    case "balance":
+                        if let old = library.entry(forPath: current) { usage[old.id, default: 1] -= 1 }
+                        guard let entry = library.pick(&usage) else { throw StudioError("模板库里没有启用的模板") }
+                        path = codeTemplateFile(dataDir, entry.id)
+                    default: path = settings.codeSource.path
+                    }
+                    let (source, chosen) = try template(at: path)
+                    let result = try await pipeline.applyCodeTemplate(dir, source: source, template: chosen, fontPlan: fontPlan)
+                    done.append(result.merging(["dir": .string(dir), "reassigned": JSON.orNull(reassigned)]))
+                    if let reassigned { try? await pipeline.log(dir, "原来没有 Word 代码模板，这次分到\(reassigned)") }
+                    report(dir, "done", reassigned: reassigned)
                 } catch {
                     let message = "\(Path.basename(dir))：\(messageOf(error))"
                     failed.append(message)
-                    try? await pipeline.log(dir, "批量应用代码模板失败：\(messageOf(error))", "error")
+                    report(dir, "failed", messageOf(error))
+                    try? await pipeline.log(dir, "更新代码材料失败：\(messageOf(error))", "error")
                 }
             }
         } catch { failed.append(messageOf(error)) }
-        emit(.obj(["type": "code-template-batch", "current": .null, "index": .number(Double(dirs.count)), "total": .number(Double(dirs.count))]))
+        emit(.obj(["type": "code-template-batch", "phase": "end", "current": .null, "index": .number(Double(dirs.count)), "total": .number(Double(dirs.count)), "error": JSON.orNull(failed.last)]))
         return .obj(["done": .array(done), "failed": JSON(failed), "skipped": JSON(skipped)])
     }
 
@@ -160,6 +216,7 @@ extension StudioCore {
 extension Pipeline {
     /// 在 running 的同一把锁内占用项目；开始处理、改名和移除等入口会看到这个占用。
     func applyCodeTemplate(_ dir: String, source: JSON, template: CodeWordTemplate, fontPlan: [String: FontPlanEntry]) async throws -> JSON {
+        try assertEditable(dir)
         let (handle, job) = try running.withLock { table -> (RunHandle, Task<JSON, Error>) in
             guard table[dir] == nil else { throw StudioError("项目正在运行，未改动原交付包") }
             let handle = RunHandle(cancellable: false)
@@ -191,26 +248,28 @@ extension Pipeline {
             throw StudioError("交付包缺少指南 Word 或 TXT，请先补齐材料")
         }
         let lines = template.lines.count
-        let nonEmpty = template.lines.filter { !$0.jsTrimmed.isEmpty }.count
-        guard nonEmpty > 3000 else { throw StudioError("代码必须超过 3000 个非空白行") }
+        let nonEmpty = template.nonEmptyLines
         let operationSettings = try await settingsStore.get()
         let stamp = "\(timestampSlug())-\(randomHex(3))"
         let staging = Path.join(projectStore.stagingRoot, "\(Path.basename(dir))-code-template-\(stamp)")
         defer { FS.remove(staging) }
         let codeName = "\(name)\(CODE_SUFFIX)"
         let stagedBundle = Path.join(staging, name)
-        try await log(dir, "按当前 Word 模板更新代码材料：\(lines) 行（非空白 \(nonEmpty) 行），验收正好 60 页")
+        try await log(dir, "更新代码材料：\(lines) 段代码，印出来正好 60 页 × 每页 50 行")
         let fonts = try await renderCodeTemplate(template, project: staging, software: name, fontPlan: fontPlan)
         guard countPdfPages(fonts.pdfPath) == 60 else {
             throw StudioError("代码 PDF 实际 \(countPdfPages(fonts.pdfPath).map(String.init) ?? "无法识别") 页，必须正好 60 页；原交付包未改动")
         }
         let txtName = "\(name)指南.txt"
         let txt = try FS.readText(Path.join(bundle, txtName))
-        let newTxt = try codeTemplateMetadata(txt, lineCount: lines)
+        var fields = operationSettings.txtFields
+        for (key, value) in state["request"]?["txtFields"].fields ?? JSONObject() { fields[key] = value.jsString }
+        if !(state["request"]?["txtFields"]?["language"].isTruthy ?? false) { fields["language"] = "JAVA" }
+        let newTxt = try rewriteGuideTxtHeader(txt, fields: fields)
         try FS.write(Path.join(stagedBundle, txtName), newTxt)
         let at = isoNow()
         let bodySha = sha256Hex(template.lines.joined(separator: "\n") + "\n")
-        let pagination: JSON = ["templateSha256": .string(template.sha256), "targetPages": 60, "pdfPages": 60, "lineCount": .number(Double(lines)), "nonEmptyLines": .number(Double(nonEmpty))]
+        let pagination: JSON = ["templateSha256": .string(template.sha256), "targetPages": 60, "rowsPerPage": .number(Double(CodeLayout.rowsPerPage)), "pdfPages": 60, "sourceRows": .number(Double(template.sourceRows)), "lineCount": .number(Double(lines)), "nonEmptyLines": .number(Double(nonEmpty))]
         var manifest = try FS.readJSON(paths.manifest) ?? ["softwareName": .string(name)]
         manifest["codeSource"] = source.merging(["fileCount": 1, "lineCount": .number(Double(lines)), "nonEmptyLines": .number(Double(nonEmpty)), "sha256": .string(bodySha)])
         manifest["codePagination"] = pagination
@@ -236,7 +295,7 @@ extension Pipeline {
             for file in ["\(codeName).docx", "\(codeName).pdf", txtName] { try FS.writeAtomic(Path.join(bundle, file), FS.read(Path.join(stagedBundle, file))) }
             try FS.writeJSONAtomic(paths.manifest, manifest)
             if var regions = try FS.readJSON(paths.regionIndex) {
-                regions["regions"]?["artifact.docx.code"] = .obj(["label": "代码 Word", "summary": .string("Word 模板，共 \(lines) 行（非空白 \(nonEmpty) 行），PDF 60 页")])
+                regions["regions"]?["artifact.docx.code"] = .obj(["label": "代码 Word", "summary": .string("Word 模板，\(lines) 段代码，60 页 × 每页 50 行")])
                 try FS.writeJSONAtomic(paths.regionIndex, regions)
             }
             try await updateRecord(dir) { record in
@@ -266,7 +325,7 @@ extension Pipeline {
                     draft["steps"]?["build"]?["inputHash"] = .string(hash)
                     draft["steps"]?["build"]?["finishedAt"] = .string(at)
                 }
-                appendLog(&draft, "代码模板更新完成：PDF 正好 60 页，\(lines) 行（非空白 \(nonEmpty) 行）；旧材料已归档")
+                appendLog(&draft, "代码材料更新完成：PDF 正好 60 页、每页 50 行；旧材料已归档")
             }
             try transaction.markCommitted()
         } catch {
@@ -276,16 +335,4 @@ extension Pipeline {
         }
         return result.merging(["archive": .string(archive)])
     }
-}
-
-/// 保留 TXT 的功能正文与环境字段，只同步当前代码的语言和真实源程序量。
-func codeTemplateMetadata(_ original: String, lineCount: Int) throws -> String {
-    var output = original
-    for (label, value) in [("编程语言", "JAVA"), ("源程序量", "\(lineCount)行")] {
-        let pattern = try NSRegularExpression(pattern: "(【\(label)】)(?:[ \\t]*\\r?\\n(?!【)[^\\r\\n]*|[^\\r\\n]*)")
-        let range = NSRange(output.startIndex..., in: output)
-        guard pattern.numberOfMatches(in: output, range: range) == 1 else { throw StudioError("TXT 缺少或重复【\(label)】字段，原材料未改动") }
-        output = pattern.stringByReplacingMatches(in: output, range: range, withTemplate: "$1\(value)")
-    }
-    return output
 }

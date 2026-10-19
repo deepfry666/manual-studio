@@ -94,6 +94,8 @@ struct AssignmentRow: View {
     @State private var vendorId = ""
     @State private var modelName = ""
     @State private var testing = false
+    /// 测试结果：没问题时只弹提示；有问题时打开窗口，写明线路回了什么
+    @State private var report: (title: String, summary: String, details: String)?
 
     var vendor: LlmVendor? { model.settings.llm.vendors.first { $0.id == vendorId } }
     var suggestions: [String] {
@@ -149,6 +151,30 @@ struct AssignmentRow: View {
             vendorId = current?.vendorId ?? ""
             modelName = current?.model ?? ""
         }
+        .sheet(isPresented: Binding(get: { report != nil }, set: { if !$0 { report = nil } })) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(report?.title ?? "").font(.headline)
+                Text(report?.summary ?? "").textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                if let details = report?.details, !details.isEmpty {
+                    Text("线路回的内容（结束原因、正文、推理内容、原始返回）").font(.subheadline.weight(.semibold))
+                    ScrollView {
+                        Text(details).font(.system(.callout, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(minHeight: 260)
+                }
+                HStack {
+                    Button("复制全部") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString([report?.title, report?.summary, report?.details].compactMap { $0 }.joined(separator: "\n\n"), forType: .string)
+                        model.toast(.success, "已复制")
+                    }
+                    Spacer()
+                    Button("好") { report = nil }.keyboardShortcut(.defaultAction)
+                }
+            }
+            .padding(20)
+            .frame(width: 680)
+        }
     }
 
     func save() {
@@ -171,7 +197,13 @@ struct AssignmentRow: View {
             defer { testing = false }
             do {
                 guard let result = try await model.core?.testVendor(vendorId, model: modelName, vision: info.needsVision) else { return }
-                model.toast(.success, "可用（\(Int(result.ms)) 毫秒）：\(result.reply)")
+                if let problem = result.jsonProblem {
+                    report = ("能连上，但不能按 JSON 输出", "一句话测试的回复：\(result.reply.isEmpty ? "（空）" : result.reply)\n按 JSON 输出时：\(problem)\n\n规划、检查截图、写文字都需要模型按 JSON 输出，这条线路用来做这些步骤会失败。", result.diagnostics ?? "")
+                } else if let diagnostics = result.diagnostics {
+                    report = ("能按 JSON 输出，但一句话测试没有回正文", "回复：（空）", diagnostics)
+                } else {
+                    model.toast(.success, "可用（\(Int(result.ms)) 毫秒），能按 JSON 输出：\(result.reply)")
+                }
             } catch {
                 model.toast(.error, messageOf(error))
             }

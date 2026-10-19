@@ -44,10 +44,28 @@ struct AlertItem: Identifiable {
     var action: (() -> Void)? = nil
 }
 
+/// 更新代码材料的进度（一个一个处理）：哪些还在等、正在做哪个、做完和失败的
+struct CodeBatchProgress: Equatable {
+    var total: Int
+    var index = 0
+    var current: String?
+    var pending: Set<String>
+    var done = 0
+    var failed = 0
+    var finished = false
+}
+
 struct PdfJob: Equatable {
     let index: Int
     let total: Int
     let current: String
+}
+
+/// 一个项目的实时进度和「该重新读了」的标记。项目页只盯自己这一份。
+@Observable
+final class ProjectSignal {
+    var live: JSON?
+    var revision = 0
 }
 
 /// 全局状态：核心服务、设置、项目列表、实时进度和事件。所有界面都从这里取数据。
@@ -74,6 +92,18 @@ final class AppModel {
     var projectPath: [String] = []
     /// 历史项目列表当前显示的顺序（项目页的上一个 / 下一个用）
     var navigationOrder: [String] = []
+    // 历史项目列表的搜索和筛选：放在这里，切到别的页面再回来还在
+    var listQuery = ""
+    var listStatus = "all"
+    var listTime = "all"
+    var listBatch = "all"
+    var listPickedDate = Date()
+    /// 按名单处理后只显示名单里的项目（nil 表示正常显示）
+    var listOnly: Set<String>?
+    /// 刚看过的项目：回到列表时，即使状态变了不符合筛选也照样显示，直到换筛选或搜别的
+    var stickyProject: String?
+    /// 从项目页回到列表时选中它
+    var listSelectRequest: String?
     /// 上一个项目停留的页面
     var lastProjectTab: ProjectTab?
     var modelsTab = "providers"
@@ -88,12 +118,23 @@ final class AppModel {
     var batchItems: [JSON] = []
     var batchPaused = false
     var pendingJobs: [JSON] = []
-    var live: [String: JSON] = [:]
     var activity: [String: [String]] = [:]
-    var revisions: [String: Int] = [:]
+    /// 每个项目一份实时进度和刷新标记：一个项目有动静，只刷新看着它的界面（以前所有项目共用一张表，谁动都整页重画）
+    @ObservationIgnored private var signals: [String: ProjectSignal] = [:]
+
+    func signal(_ dir: String) -> ProjectSignal {
+        if let existing = signals[dir] { return existing }
+        let created = ProjectSignal()
+        signals[dir] = created
+        return created
+    }
     var callsRevision = 0
     var settingsRevision = 0
     var pdfJob: PdfJob?
+    var codeBatch: CodeBatchProgress?
+    /// 这次打开软件以来代码材料更新成功 / 失败的项目（列表上的小标签）
+    var codeUpdated: Set<String> = []
+    var codeFailed: [String: String] = [:]
     var toasts: [Toast] = []
     var alert: AlertItem?
     var migrationSummary: JSON?
@@ -103,6 +144,10 @@ final class AppModel {
     var devFeedbackOpen: Bool?
     var devNewMode: String?
     var devSelection: Set<String>?
+    /// 开发自检：打开「按名单选择」并填好名单（| 分隔）
+    var devNameListText: String?
+    /// 开发自检：对当前选中的项目执行「更新代码材料」（keep / balance）
+    var devCodeBatch: String?
 
     private var debounced: [String: Task<Void, Never>] = [:]
     private var batchNotified = false
@@ -234,11 +279,16 @@ final class AppModel {
 
     func reloadProjects() async {
         guard let core else { return }
-        if let rows = try? await core.listProjects() {
-            projects = rows.map(ProjectRow.init(json:))
-            projectsLoaded = true
-        }
+        lastProjectsReload = Date()
+        guard let rows = try? await core.listProjects() else { return }
+        // 每行的时间解析放到后台做好，界面线程只换一下数据；内容没变就不动，免得整张表重画
+        let built = await Task.detached(priority: .userInitiated) { rows.map(ProjectRow.init(json:)) }.value
+        if built != projects { projects = built }
+        projectsLoaded = true
     }
+
+    @ObservationIgnored private var lastProjectsReload = Date.distantPast
+    @ObservationIgnored private var projectsReloadScheduled = false
 
     func reloadBatch() {
         guard let core else { return }
@@ -252,11 +302,21 @@ final class AppModel {
     }
 
     func bump(_ dir: String) {
-        debounce("project:\(dir)", 250) { [weak self] in self?.revisions[dir, default: 0] += 1 }
+        debounce("project:\(dir)", 250) { [weak self] in self?.signal(dir).revision += 1 }
     }
 
+    /// 列表刷新的固定节奏：最多每 2 秒一次，但一定会刷到。
+    /// 以前是「等事件停下来再刷」，批量运行时事件不停，要么一直不刷，要么停下时一下刷好几次。
     func scheduleProjectsReload(_ ms: Int = 800) {
-        debounce("projects", ms) { [weak self] in await self?.reloadProjects() }
+        guard !projectsReloadScheduled else { return }
+        projectsReloadScheduled = true
+        let wait = max(Double(ms) / 1000, 2 - Date().timeIntervalSince(lastProjectsReload))
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(max(0, wait)))
+            guard let self else { return }
+            self.projectsReloadScheduled = false
+            await self.reloadProjects()
+        }
     }
 
     func debounce(_ key: String, _ ms: Int, _ action: @escaping @MainActor () async -> Void) {
@@ -281,9 +341,9 @@ final class AppModel {
         case "progress":
             guard let dir else { return }
             if let progress = event["progress"], !progress.isNull {
-                live[dir] = progress
+                signal(dir).live = progress
             } else {
-                live[dir] = nil
+                signal(dir).live = nil
                 bump(dir)
             }
             scheduleProjectsReload()
@@ -327,6 +387,48 @@ final class AppModel {
             bump(dir)
         case "call":
             debounce("calls", 800) { [weak self] in self?.callsRevision += 1 }
+        case "code-template-batch":
+            switch event["phase"]?.string {
+            case "start":
+                let dirs = event["dirs"].items.compactMap(\.string)
+                codeBatch = CodeBatchProgress(total: dirs.count, pending: Set(dirs))
+                for dir in dirs { codeUpdated.remove(dir); codeFailed[dir] = nil }
+            case "end":
+                if var batch = codeBatch {
+                    // 批次中途出错没处理到的，也标出来
+                    for dir in batch.pending { codeFailed[dir] = "没有处理：\(event["error"]?.string ?? "批次中断")"; batch.failed += 1 }
+                    batch.pending = []
+                    batch.current = nil
+                    batch.finished = true
+                    codeBatch = batch
+                    let finished = batch
+                    Task { @MainActor [weak self] in
+                        try? await Task.sleep(for: .seconds(6))
+                        if self?.codeBatch == finished { self?.codeBatch = nil }
+                    }
+                }
+                scheduleProjectsReload(300)
+            default:
+                if var batch = codeBatch, let current = event["current"]?.string {
+                    batch.current = current
+                    batch.index = event["index"]?.int ?? batch.index
+                    codeBatch = batch
+                }
+            }
+        case "code-template-item":
+            guard let dir else { return }
+            if var batch = codeBatch {
+                batch.pending.remove(dir)
+                if batch.current == dir { batch.current = nil }
+                if event["status"]?.string == "done" { batch.done += 1 } else { batch.failed += 1 }
+                codeBatch = batch
+            }
+            switch event["status"]?.string {
+            case "done": codeUpdated.insert(dir); codeFailed[dir] = nil
+            case "failed": codeFailed[dir] = event["message"]?.string ?? "更新失败"
+            default: codeFailed[dir] = "跳过：\(event["message"]?.string ?? "")"
+            }
+            bump(dir)
         case "pdf-reexport":
             if let current = event["current"]?.string {
                 pdfJob = PdfJob(index: event["index"]?.int ?? 0, total: event["total"]?.int ?? 0, current: current)

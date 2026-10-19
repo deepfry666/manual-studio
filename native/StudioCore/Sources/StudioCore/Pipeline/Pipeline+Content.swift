@@ -79,10 +79,13 @@ extension Pipeline {
                 setProgress(dir, .obj(["detail": .string(targets.isEmpty ? "撰写封面介绍" : "撰写说明：第 \(min(targets.count, index * 4 + 1))–\(min(targets.count, index * 4 + chunk.count)) 屏（共 \(targets.count) 屏）")]))
                 let result = try await callLlm("content", dir, ChatJsonRequest(
                     system: CONTENT_SYSTEM.replacingOccurrences(of: "{floor}", with: String(floor)),
-                    user: contentUserPrompt(softwareName: softwareName(state), profile: plan["profile"], screens: chunk, inventories: inventories, needOverview: wantsOverview, existingOverview: overview, floor: floor, instructions: instructions, currentTexts: currentTexts) + platformNeutralRule(softwareName(state)) + contentDateRule(state),
+                    user: contentUserPrompt(softwareName: softwareName(state), profile: plan["profile"], screens: chunk, inventories: inventories, needOverview: wantsOverview, existingOverview: overview, floor: floor, instructions: instructions, currentTexts: currentTexts) + platformNeutralRule(softwareName(state)) + contentDateRule(state) + CONTENT_STYLE_RULE + RED_LINE_RULE,
                     schema: CONTENT_SCHEMA,
                     check: { contentCheck($0, screens: chunk, needOverview: wantsOverview, floor: floor) + platformProblems(name, "封面介绍或功能说明", [$0["overview"].text] + $0["screens"].items.flatMap { [$0["title"].text, $0["text"].text] }) },
-                    softCheck: { dateProblems(state, "封面介绍或功能说明", [$0["overview"].text] + $0["screens"].items.flatMap { [$0["title"].text, $0["text"].text] }, allowed: shownDates) },
+                    softCheck: {
+                        let texts = [$0["overview"].text] + $0["screens"].items.flatMap { [$0["title"].text, $0["text"].text] }
+                        return dateProblems(state, "封面介绍或功能说明", texts, allowed: shownDates) + redLineProblems("封面介绍或功能说明", texts) + contentStyleProblems($0["screens"].items)
+                    },
                     temperature: 0.7,
                     maxTokens: 8000
                 ))
@@ -201,9 +204,10 @@ extension Pipeline {
         let current = (content["design"]?["sections"].items ?? []).map { "\(templateText($0["title"]))\n\(templateText($0["text"]))" }.joined(separator: "\n\n")
         let result = try await callLlm("design", dir, ChatJsonRequest(
             system: DESIGN_SYSTEM,
-            user: designUserPrompt(softwareName: softwareName(state), profile: plan["profile"], features: plan["featureMap"]?["features"].items ?? [], screens: plan["screens"].items, instruction: designInstruction, current: current) + platformNeutralRule(softwareName(state)) + contentDateRule(state),
+            user: designUserPrompt(softwareName: softwareName(state), profile: plan["profile"], features: plan["featureMap"]?["features"].items ?? [], screens: plan["screens"].items, instruction: designInstruction, current: current) + platformNeutralRule(softwareName(state)) + contentDateRule(state) + RED_LINE_RULE,
             schema: DESIGN_SCHEMA,
             check: { designCheck($0) + platformProblems(name, "设计说明", $0["sections"].items.flatMap { [$0["title"].text, $0["text"].text] }) },
+            softCheck: { redLineProblems("设计说明", $0["sections"].items.flatMap { [$0["title"].text, $0["text"].text] }) },
             temperature: 0.6,
             maxTokens: 8000
         ))
@@ -373,7 +377,8 @@ extension Pipeline {
                 if let sha = screen["imageSha"].truthyValue ?? screen["gate"]?["sha"] { shas[id] = sha }
             }
             var txt = JSONObject()
-            for (key, value) in settings.txtFields.sorted(by: { $0.key < $1.key }) { txt[key] = .string(value) }
+            // 源程序量是 1.6.0 新加的字段：还是默认值时不进哈希，免得所有旧项目都被当成要重建交付包
+            for (key, value) in settings.txtFields.sorted(by: { $0.key < $1.key }) where !(key == "sourceLines" && value == DEFAULT_TXT_FIELDS["sourceLines"]) { txt[key] = .string(value) }
             for (key, value) in request["txtFields"].fields { txt[key] = value }
             return hashObject(.obj([
                 "content": content ?? .null, "shas": .object(shas), "code": codeSourceFor(state, settings).source ?? .null,

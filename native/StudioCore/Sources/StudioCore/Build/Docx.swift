@@ -427,19 +427,37 @@ public func createCodeDocx(project: String, software: String, body: String) thro
 let TXT_DEFAULT_FIELDS = DEFAULT_TXT_FIELDS
 
 /// 环境字段可配置（默认值与原模板一致），源程序量按代码来源实际行数填写。
-public func createGuideTxt(project: String, software: String, overview: String, fields: [String: String], sourceLines: Int) throws {
+/// TXT 开头固定的 9 行，和原始模板一字不差（2026-05 起一直这样交付）。
+func guideTxtHeader(_ fields: [String: String]) -> [String] {
     var f = TXT_DEFAULT_FIELDS
     for (key, value) in fields { f[key] = value }
-    let template = [
+    return [
         "【开发的硬件环境】\(f["devHardware"] ?? "")",
+        "【运行的硬件环境】\(f["runHardware"] ?? "")",
         "【开发该软件的操作系统】\(f["devOs"] ?? "")",
         "【软件开发环境/开发工具】\(f["devTools"] ?? "")",
+        "【该软件的运行平台/操作系统】\(f["runPlatform"] ?? "")",
+        "【软件运行支撑环境/支持软件】\(f["runSupport"] ?? "")",
         "【编程语言】\(f["language"] ?? "")",
-        "【源程序量】\(sourceLines > 0 ? "\(sourceLines)行" : "")",
+        "【源程序量】\(f["sourceLines"] ?? "")",
         "【软件的主要功能】",
-    ].joined(separator: "\r\n")
+    ]
+}
+
+public func createGuideTxt(project: String, software: String, overview: String, fields: [String: String]) throws {
+    let template = guideTxtHeader(fields).joined(separator: "\r\n")
     let formatted = Rx.split(#"\n+"#, overview.replacingOccurrences(of: "\r\n", with: "\n")).map(\.jsTrimmed).filter { !$0.isEmpty }.joined(separator: "\r\n")
     let deliveryDir = Path.join(project, software)
     try FS.mkdirp(deliveryDir)
     try FS.write(Path.join(deliveryDir, "\(software)\(GuideConstants.GUIDE_SUFFIX).txt"), "\(template)\r\n\(formatted)\r\n")
+}
+
+/// 已有 TXT 换成 9 行开头：【软件的主要功能】之前的全部换掉，之后的正文原样保留。
+func rewriteGuideTxtHeader(_ original: String, fields: [String: String]) throws -> String {
+    let marker = "【软件的主要功能】"
+    let parts = original.components(separatedBy: marker)
+    guard parts.count == 2 else { throw StudioError("TXT 缺少或重复【软件的主要功能】，原材料未改动") }
+    let newline = original.contains("\r\n") ? "\r\n" : "\n"
+    let header = guideTxtHeader(fields)
+    return header.dropLast().joined(separator: newline) + newline + marker + parts[1]
 }

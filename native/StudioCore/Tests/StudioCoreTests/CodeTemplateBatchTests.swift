@@ -4,13 +4,16 @@ import Testing
 
 @Suite("历史项目批量代码模板", .serialized)
 struct CodeTemplateBatchTests {
-    @Test("TXT 只同步语言和源程序量，保留功能与环境文案")
-    func txtMetadata() throws {
-        let original = "【开发环境】自定义环境\r\n【编程语言】Swift\r\n【源程序量】27行\r\n【软件的主要功能】\r\n我的功能正文\r\n"
-        #expect(try codeTemplateMetadata(original, lineCount: 3322) == "【开发环境】自定义环境\r\n【编程语言】JAVA\r\n【源程序量】3322行\r\n【软件的主要功能】\r\n我的功能正文\r\n")
-        let multiline = "【编程语言】\nSwift\n【源程序量】\n27行\n【软件的主要功能】\n保留正文\n"
-        #expect(try codeTemplateMetadata(multiline, lineCount: 3322) == "【编程语言】JAVA\n【源程序量】3322行\n【软件的主要功能】\n保留正文\n")
-        #expect(throws: StudioError.self) { try codeTemplateMetadata("【编程语言】Swift", lineCount: 3322) }
+    @Test("TXT 开头换成 9 行模板，主要功能正文原样保留")
+    func txtHeader() throws {
+        let original = "【开发的硬件环境】x\r\n【开发该软件的操作系统】y\r\n【编程语言】Swift\r\n【源程序量】3322行\r\n【软件的主要功能】\r\n我的功能正文\r\n"
+        let rewritten = try rewriteGuideTxtHeader(original, fields: DEFAULT_TXT_FIELDS)
+        let lines = rewritten.components(separatedBy: "\r\n")
+        #expect(lines.prefix(9) == ["【开发的硬件环境】CPU类型：Intel英特尔酷睿i5-4590", "【运行的硬件环境】安卓机，8核处理器，ROM 64GB", "【开发该软件的操作系统】Windows Server 2012以上", "【软件开发环境/开发工具】Visual Studio2010", "【该软件的运行平台/操作系统】Android操作系统5.0版以上", "【软件运行支撑环境/支持软件】 Android Studio + Java jdk + Android SDK", "【编程语言】JAVA", "【源程序量】13534行", "【软件的主要功能】"])
+        #expect(rewritten.hasSuffix("【软件的主要功能】\r\n我的功能正文\r\n"))
+        let unix = try rewriteGuideTxtHeader("【编程语言】\nSwift\n【软件的主要功能】\n保留正文\n", fields: DEFAULT_TXT_FIELDS)
+        #expect(unix.hasSuffix("【源程序量】13534行\n【软件的主要功能】\n保留正文\n"))
+        #expect(throws: StudioError.self) { try rewriteGuideTxtHeader("【编程语言】Swift", fields: DEFAULT_TXT_FIELDS) }
     }
 
     @Test("真实转换批量更新只读历史包，单项失败继续、无 AI、保存恢复与归档", .timeLimit(.minutes(4)))
@@ -68,9 +71,11 @@ struct CodeTemplateBatchTests {
             let bundle = paths.bundle(name)
             #expect(countPdfPages(Path.join(bundle, "\(name)\(CODE_SUFFIX).pdf")) == 60)
             let code = try CodeWordTemplate(data: FS.read(Path.join(bundle, "\(name)\(CODE_SUFFIX).docx")))
-            #expect(code.lines.count == 3322)
-            #expect(code.lines.filter { !$0.jsTrimmed.isEmpty }.count == 3229)
-            #expect(try FS.readText(Path.join(bundle, "\(name)指南.txt")).contains("【源程序量】3322行"))
+            #expect(code.rows.count == 3000, "印出来正好 60 页 × 50 行")
+            #expect(code.sourceRows == 3322)
+            let txt = try FS.readText(Path.join(bundle, "\(name)指南.txt"))
+            #expect(txt.hasPrefix("【开发的硬件环境】CPU类型：Intel英特尔酷睿i5-4590\r\n【运行的硬件环境】安卓机，8核处理器，ROM 64GB\r\n"))
+            #expect(txt.contains("【编程语言】JAVA\r\n【源程序量】13534行\r\n【软件的主要功能】\r\n保留自定义功能"))
             let state = try #require(try core.projectStore.read(dir))
             #expect(state["status"]?.string == "readonly")
             #expect(state["lastBuild"]?["pdfPages"]?.int == 3)
@@ -83,7 +88,8 @@ struct CodeTemplateBatchTests {
             let manifest = try readJSONFile(paths.manifest)
             #expect(manifest["custom"] == "keep")
             #expect(manifest["codePagination"]?["targetPages"]?.int == 60)
-            #expect(manifest["codeSource"]?["nonEmptyLines"]?.int == 3229)
+            #expect(manifest["codeSource"]?["nonEmptyLines"]?.int == code.nonEmptyLines)
+            #expect(manifest["codePagination"]?["rowsPerPage"]?.int == 50)
             let record = try readJSONFile(recordPath(dir))
             #expect(record["llm"]?["legacy"] == "keep")
             #expect(record["screens"]?["screen-01"]?["source"] == "imported")
@@ -131,7 +137,7 @@ struct CodeTemplateBatchTests {
         #expect(try ctx.core.projectStore.read(dir) == before)
     }
 
-    @Test("代码放不进60页时拒绝交付，旧文件和来源锁定保持不变")
+    @Test("印出来不够 3000 行的模板加不进模板库，旧文件和来源锁定保持不变")
     func rejectsOverflowWithoutMutation() async throws {
         let ctx = try await CoreContext()
         defer { FS.remove(ctx.root) }
@@ -146,23 +152,29 @@ struct CodeTemplateBatchTests {
             var bytes = try source.read(entry)
             if entry.name == "word/document.xml" {
                 var xml = String(decoding: bytes, as: UTF8.self)
-                let pattern = try NSRegularExpression(pattern: "<w:t(?:\\s[^>]*)?>")
-                let range = try #require(pattern.firstMatch(in: xml, range: NSRange(xml.startIndex..., in: xml))?.range)
-                let index = try #require(Range(range, in: xml)).upperBound
-                xml.insert(contentsOf: String(repeating: "超长代码", count: 4000), at: index)
+                // 只留前 2000 段：印出来不到 3000 行
+                let paragraphs = Rx.matches(#"<w:p>[\s\S]*?</w:p>"#, xml).compactMap { $0[0] }
+                let body = paragraphs.prefix(2000).joined()
+                let start = try #require(xml.range(of: "<w:body>")).upperBound
+                let end = try #require(xml.range(of: "<w:sectPr>")).lowerBound
+                xml.replaceSubrange(start..<end, with: body)
                 bytes = Data(xml.utf8)
             }
             modified.addFile(entry.name, bytes)
         }
         let template = Path.join(ctx.root, "overflow.docx")
         try FS.write(template, modified.finish())
-        try await ctx.core.importCodeTemplate(template)
+        await #expect(throws: StudioError.self) { try await ctx.core.importCodeTemplate(template) }
+        let added = try await ctx.core.addCodeTemplates([template])
+        #expect(added.first?["ok"] == .bool(false))
+        #expect(added.first?["error"].text.contains("还差 1000 行") == true, "\(added)")
+        #expect(try await ctx.core.settingsStore.get().codeTemplates.entries.isEmpty)
         let before = try #require(try ctx.core.projectStore.read(dir))
         let originals = try (FS.list(bundle) ?? []).map { file -> (String, Data) in let path = Path.join(bundle, file); return (path, try FS.read(path)) }
         let result = await ctx.core.applyCurrentCodeTemplate([dir])
         #expect(result["done"].items.isEmpty)
         #expect(result["failed"].items.count == 1)
-        #expect(result["failed"].items[0].jsString.contains("60页"))
+        #expect(result["failed"].items.first?.jsString.contains("代码模板") == true)
         for (path, bytes) in originals { #expect(try FS.read(path) == bytes) }
         #expect(try ctx.core.projectStore.read(dir)?["request"] == before["request"])
         #expect(try ctx.core.projectStore.read(dir)?["lastBuild"] == before["lastBuild"])

@@ -39,6 +39,10 @@ public func newState(_ request: JSON) -> JSON {
     fields["platform"] = .string(request["platform"].text)
     fields["wantDesign"] = .bool(request["wantDesign"].isTruthy)
     fields["codeSource"] = request["codeSource"].or(.null)
+    // 新建时就分好的代码模板记在项目上，之后改设置不影响它
+    if request["codeSourceLocked"].isTruthy { fields["codeSourceLocked"] = true }
+    // 1.6.0 起新建的项目：生图提示词带内容红线
+    if let version = request["policyVersion"] { fields["policyVersion"] = version }
     fields["txtFields"] = request["txtFields"].or(.null)
     fields["extraBrandTokens"] = request["extraBrandTokens"].or([])
     if let date = request["contentDate"] { fields["contentDate"] = date }

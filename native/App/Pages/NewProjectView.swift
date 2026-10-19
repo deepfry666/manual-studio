@@ -30,13 +30,44 @@ struct NewProjectView: View {
     }
 }
 
-struct CodeSourceRow: View {
+/// 代码模板：默认按设置里的分配规则（轮流平均分），也可以指定一个。
+struct CodeTemplateRow: View {
     @Environment(AppModel.self) private var model
+    @Binding var templateId: String
+    /// 批量新建时显示这一批会怎么分
+    var batchCount: Int? = nil
+    @State private var preview: [String] = []
+
+    var autoLabel: String {
+        let library = model.settings.codeTemplates
+        if library.assign == "fixed", let fixed = library.entry(library.fixedId), fixed.enabled { return "自动（\(fixed.label)）" }
+        return "自动（轮流平均分）"
+    }
+
+    var summary: String? {
+        guard batchCount != nil, !preview.isEmpty else { return nil }
+        var counts: [String: Int] = [:]
+        for label in preview { counts[label, default: 0] += 1 }
+        return counts.sorted { $0.key.localizedStandardCompare($1.key) == .orderedAscending }.map { "\($0.key) × \($0.value)" }.joined(separator: "、")
+    }
 
     var body: some View {
-        SettingsRow(label: "代码来源", info: "在「设置 → 代码来源」里统一设置，所有项目共用。没有代码来源时交付包只有说明书 3 个文件。") {
-            PathText(path: model.settings.codeSource.path, empty: "未设置（只出说明书）")
-            Button("更改") { model.go(.settings, tab: "code") }.buttonStyle(.borderless)
+        let enabled = model.settings.codeTemplates.enabled
+        SettingsRow(label: "代码模板", hint: enabled.isEmpty ? "还没有模板，交付包只有说明书 3 个文件" : summary.map { "这一批：\($0)" }, info: "在「设置 → 代码模板」里加模板、设分配方式。每个模板都是正好 60 页、每页 50 行，页眉换成软件名。") {
+            if enabled.isEmpty {
+                Button("去添加") { model.go(.settings, tab: "code") }.buttonStyle(.borderless)
+            } else {
+                Picker("", selection: $templateId) {
+                    Text(autoLabel).tag("")
+                    ForEach(enabled) { Text($0.label).tag($0.id) }
+                }
+                .labelsHidden()
+                .frame(width: 200, alignment: .trailing)
+            }
+        }
+        .task(id: "\(batchCount ?? -1)|\(templateId)|\(model.settingsRevision)") {
+            guard let batchCount, batchCount > 0 else { preview = []; return }
+            preview = (try? await model.core?.previewCodeTemplateAssignment(count: batchCount, fixedId: templateId.isEmpty ? nil : templateId)) ?? []
         }
     }
 }
@@ -91,6 +122,7 @@ struct SingleProjectForm: View {
     @State private var wantDesign = false
     @State private var contentDate = localDateKey()
     @State private var earliestDate = ""
+    @State private var templateId = ""
     @State private var busy = false
     @FocusState private var nameFocused: Bool
 
@@ -99,7 +131,7 @@ struct SingleProjectForm: View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .top, spacing: 20) {
                 SettingsGroup(title: "基本信息") {
-                    SettingsRow(label: "软件名", hint: name.jsTrimmed.isEmpty ? "含版本号，按原样填写" : version.map { "识别到版本号 \($0)" } ?? "没有版本号", info: "只用于文件名、文档标题和页眉，截图里不会出现软件名和版本号。") {
+                    SettingsRow(label: "软件名", hint: softwareNameRedLineHint(name) ?? (name.jsTrimmed.isEmpty ? "含版本号，按原样填写" : version.map { "识别到版本号 \($0)" } ?? "没有版本号"), info: "只用于文件名、文档标题和页眉，截图里不会出现软件名和版本号。") {
                         TextField("例如：云伴日程 V1.0", text: $name)
                             .textFieldStyle(.roundedBorder)
                             .frame(minWidth: 160, idealWidth: 320, maxWidth: 320)
@@ -126,7 +158,7 @@ struct SingleProjectForm: View {
                     SettingsRow(label: "设计说明章节") {
                         Toggle("", isOn: $wantDesign).toggleStyle(.switch).labelsHidden()
                     }
-                    CodeSourceRow()
+                    CodeTemplateRow(templateId: $templateId)
                 }
             }
             HStack {
@@ -163,6 +195,7 @@ struct SingleProjectForm: View {
                     "softwareName": .string(name.jsTrimmed), "screenCount": autoCount ? .null : .number(Double(screenCount)),
                     "emphasis": .string(emphasis), "notes": .string(notes), "platform": .string(platform), "wantDesign": .bool(wantDesign),
                     "contentDate": .string(contentDate.jsTrimmed), "earliestDate": .string(earliestDate.jsTrimmed),
+                    "codeTemplateId": .string(templateId),
                 ]))
                 if runNow { core.run(dir) }
                 await model.reloadProjects()
@@ -189,6 +222,7 @@ struct BatchProjectForm: View {
     @State private var contentDate = localDateKey()
     @State private var earliestDate = ""
     @State private var startNow = true
+    @State private var templateId = ""
     @State private var busy = false
 
     var count: Int {
@@ -196,6 +230,14 @@ struct BatchProjectForm: View {
             let trimmed = line.jsTrimmed
             return !trimmed.isEmpty && !Rx.test("^(软件名|名称|name)[,，\\t]", trimmed, "i")
         }.count
+    }
+
+    /// 名称里带政务、公安这类字样的
+    var flagged: [String] {
+        Rx.split(#"\r?\n"#, text).compactMap { line in
+            let name = Rx.split("[,，\\t]", line.jsTrimmed).first?.jsTrimmed ?? ""
+            return !name.isEmpty && softwareNameRedLineHint(name) != nil ? name : nil
+        }
     }
 
     var body: some View {
@@ -216,6 +258,10 @@ struct BatchProjectForm: View {
                         TextEditor(text: $text).font(.body).scrollContentBackground(.hidden).frame(minHeight: 260)
                     }
                     .padding(8)
+                    if !flagged.isEmpty {
+                        Text("这些名称可能被认为涉及政府职能，会写成个人自用的工具，最好换个名称：\(flagged.joined(separator: "、"))")
+                            .font(.caption).foregroundStyle(.orange).padding(.horizontal, 12).padding(.bottom, 8)
+                    }
                 }
                 SettingsGroup(title: "生成选项") {
                     ScreenCountRow(hint: "没在列表里写截图数的项目", autoCount: $autoCount, screenCount: $screenCount)
@@ -228,7 +274,7 @@ struct BatchProjectForm: View {
                     }
                     ContentDateRows(contentDate: $contentDate, earliestDate: $earliestDate)
                     SettingsRow(label: "设计说明章节") { Toggle("", isOn: $wantDesign).toggleStyle(.switch).labelsHidden() }
-                    CodeSourceRow()
+                    CodeTemplateRow(templateId: $templateId, batchCount: count)
                     SettingsRow(label: "创建后直接开始", hint: "不停下确认规划") {
                         Toggle("", isOn: $startNow).toggleStyle(.switch).labelsHidden()
                     }
@@ -262,7 +308,7 @@ struct BatchProjectForm: View {
         Task {
             defer { busy = false }
             do {
-                let result = try await core.createProjectsFromList(text, screenCount: autoCount ? nil : screenCount, platform: platform, wantDesign: wantDesign, contentDate: contentDate.jsTrimmed, earliestDate: earliestDate.jsTrimmed)
+                let result = try await core.createProjectsFromList(text, screenCount: autoCount ? nil : screenCount, platform: platform, wantDesign: wantDesign, contentDate: contentDate.jsTrimmed, earliestDate: earliestDate.jsTrimmed, codeTemplateId: templateId.isEmpty ? nil : templateId)
                 if startNow, !result.created.isEmpty { await core.batch.enqueue(result.created) }
                 text = ""
                 await model.reloadProjects()

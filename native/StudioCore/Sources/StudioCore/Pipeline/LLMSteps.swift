@@ -54,6 +54,9 @@ public func gateUserPrompt(softwareName: String, tokens: [String], screen: JSON?
 }
 
 /// 按修改意见重生的截图：另外让看图模型判断这次的修改有没有体现在图上。
+/// 每张图都问一次内容红线
+public let GATE_RED_LINE_QUESTION = "\n另外输出 redLine（true / false：画面里是否出现国徽、警徽、党徽、政府机关的名称或标志、「官方」认证标识、涉政内容，或裸露、低俗、色情、赌博、暴力血腥画面；也包括把软件做成替政府办事的界面，如在线申报、缴纳罚款、官方查询）和 redLineEvidence（看到了什么，一句话；没有就空）。"
+
 public func gateChangeQuestion(_ change: String) -> String {
     change.isEmpty ? "" : "\n这张图是按用户的修改意见重新生成的，修改意见：\(change)\n另外输出 changeApplied（图上是否已经明显体现了这条修改意见，true / false；只看修改意见涉及的部分，其余不管；这张图上本来就没有修改意见涉及的内容时也算 true）和 changeEvidence（一句话依据）。"
 }

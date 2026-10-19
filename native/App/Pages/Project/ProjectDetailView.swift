@@ -21,7 +21,7 @@ struct ProjectDetailView: View {
     @State private var renameOpen = false
     @State private var removeConfirm = false
 
-    var live: JSON? { model.live[dir] }
+    var live: JSON? { model.signal(dir).live }
     var running: Bool { (data?.runningFlag ?? false) || data?.status == "running" || live != nil }
 
     var body: some View {
@@ -35,7 +35,10 @@ struct ProjectDetailView: View {
             }
         }
         .navigationTitle(data?.name ?? "项目")
-        .task(id: model.revisions[dir, default: 0]) { await reload() }
+        .task(id: model.signal(dir).revision) { await reload() }
+        // 回到列表时这个项目照样显示（即使状态变了不符合筛选），并且选中它
+        .onAppear { model.stickyProject = dir }
+        .onDisappear { if model.projectPath.isEmpty { model.listSelectRequest = dir } }
         .onChange(of: model.devProjectTab) { _, next in if let next { tab = next } }
         .onChange(of: model.devFeedbackOpen) { _, next in if let next { feedbackOpen = next } }
     }
@@ -63,6 +66,14 @@ struct ProjectDetailView: View {
         return order.indices.contains(next) ? order[next] : nil
     }
 
+    func setSubmitted(_ value: Bool) {
+        Task {
+            await model.perform(value ? "已标记为已提交，项目现在只读" : "已取消已提交，可以修改了") { _ = try await model.core?.setSubmitted([dir], value) }
+            await reload()
+            await model.reloadProjects()
+        }
+    }
+
     func go(_ step: Int) {
         guard let target = neighbor(step) else { return }
         model.lastProjectTab = activeTab
@@ -72,7 +83,7 @@ struct ProjectDetailView: View {
     @ViewBuilder
     func content(_ data: ProjectData) -> some View {
         let readOnly = data.readOnly
-        let statusKey = running ? "running" : readOnly ? "readonly" : data.status
+        let statusKey = running ? "running" : data.submitted ? "submitted" : readOnly ? "readonly" : data.status
         let status = PROJECT_STATUS[statusKey] ?? (data.status, .neutral)
         let waitingStep = STEP_ORDER.first { data.stepStatus($0) == "review" }
         let refresh: () -> Void = { Task { await reload() } }
@@ -90,11 +101,25 @@ struct ProjectDetailView: View {
                 }
                 Spacer()
             }
-            if readOnly {
+            if data.submitted {
+                Banner(.info, "已提交，只能查看", message: "\(data.submittedAt.map { "标记于 \(formatTime($0))。" } ?? "")不能运行、改文字、改图或换模板，批量操作也会跳过它。要修改请先取消已提交。") {
+                    Button("取消已提交") { setSubmitted(false) }.buttonStyle(.glass)
+                }
+            } else if data.historyReadOnly {
                 Banner(.info, "这个历史项目只有交付包，没有文案和截图源文件，只能查看。")
             }
-            if let lastError = data.state["lastError"]?.string, !running {
-                Banner(.error, "需要处理", message: lastError)
+            if model.codeBatch?.current == dir {
+                Banner(.info, "正在更新这个项目的代码材料…", message: "重排代码 Word、PDF 和 TXT 开头，几秒钟。")
+            } else if model.codeBatch?.pending.contains(dir) == true {
+                Banner(.info, "排在更新代码材料的队伍里，轮到它时会自动处理")
+            }
+            if let lastError = data.state["lastError"]?.string, !running, !data.submitted {
+                let error = splitDiagnostics(lastError)
+                Banner(.error, "需要处理", message: error.text) {
+                    if let path = error.path, FS.exists(path) {
+                        Button("查看诊断文件") { model.open(path) }.buttonStyle(.glass)
+                    }
+                }
             }
             if waitingStep == "build", !running {
                 // 交付包在软件外被改过（比如 WPS 里手改）：问清楚再覆盖
@@ -160,15 +185,21 @@ struct ProjectDetailView: View {
                     Button {
                         feedbackOpen.toggle()
                     } label: {
-                        Label("修改意见", systemImage: "text.bubble")
+                        Label("批量修改意见", systemImage: "text.bubble")
                     }
                     .badge(data.pendingFeedback.count)
-                    .help("修改意见")
+                    .help("批量修改意见：一次改很多处、说不清改哪屏时用；改某一屏直接在编辑页那一屏上改")
                 }
                 Button { model.open(dir) } label: { Label("在访达中打开", systemImage: "folder") }
                     .help("在访达中打开")
                 Menu {
                     if !readOnly { Button("改软件名…") { renameOpen = true }.disabled(running) }
+                    if data.submitted {
+                        Button("取消已提交") { setSubmitted(false) }
+                    } else if !data.historyReadOnly {
+                        Button("标记为已提交") { setSubmitted(true) }.disabled(running)
+                    }
+                    Divider()
                     Button("从列表移除…") { removeConfirm = true }.disabled(running)
                 } label: {
                     Label("更多", systemImage: "ellipsis")
@@ -236,7 +267,7 @@ struct RenameSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("改软件名").font(.title2.weight(.semibold))
-            Text("不会重新规划和生图；会用新名字重新验收截图，再重建交付包。").foregroundStyle(.secondary)
+            Text("不会重新规划和生图；会用新名字重新检查截图，再重建交付包。").foregroundStyle(.secondary)
             TextField("软件名（含版本号）", text: $value).textFieldStyle(.roundedBorder)
             HStack {
                 Spacer()
@@ -249,7 +280,7 @@ struct RenameSheet: View {
                             guard let core = model.core else { return }
                             let newDir = try await core.renameSoftware(dir, value.jsTrimmed)
                             dismiss()
-                            model.toast(.success, "已改名。截图会按新名字重新验收，然后重建交付包。")
+                            model.toast(.success, "已改名。截图会按新名字重新检查，然后重建交付包。")
                             await model.reloadProjects()
                             model.projectPath = [newDir]
                             core.run(newDir)

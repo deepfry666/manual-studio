@@ -302,7 +302,7 @@ struct StrategyGroups: View {
                 SettingsRow(label: "每屏最多尝试") {
                     NumberField(value: image.maxAttemptsPerScreen, range: 1...10, suffix: "次") { save(["maxAttemptsPerScreen": .number(Double($0))]) }
                 }
-                SettingsRow(label: "验收不通过时最多重生") {
+                SettingsRow(label: "检查没通过时最多重新生成") {
                     NumberField(value: image.gateRegenerateLimit, range: 1...6, suffix: "次") { save(["gateRegenerateLimit": .number(Double($0))]) }
                 }
                 SettingsRow(label: "满载时分流", info: "首选线路并发满了，直接发给同一画风组还有空位的线路，不排队。关闭则严格按顺序排队。") {

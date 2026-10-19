@@ -9,6 +9,7 @@ struct DeliveryTab: View {
     let onChanged: () -> Void
     @Environment(AppModel.self) private var model
     @State private var reexportConfirm = false
+    @State private var switching = false
 
     var body: some View {
         let readOnly = data.readOnly
@@ -104,29 +105,29 @@ struct DeliveryTab: View {
             }
             .frame(maxWidth: .infinity)
             VStack(alignment: .leading, spacing: 16) {
-                SettingsGroup(title: "代码来源", trailing: AnyView(Button("设置") { model.go(.settings, tab: "code") }.buttonStyle(.borderless))) {
-                    SettingsRow(label: "源码", info: code["locked"].isTruthy ? "第一次生成交付包时已记下，以后改设置不影响这个项目。" : "来自设置；第一次生成交付包时记下来。") {
-                        PathText(path: code["source"]?["path"]?.string, empty: "没有")
-                    }
-                    if code["source"].truthyValue != nil, code["locked"].isTruthy, !readOnly {
-                        SettingsRow(label: "更换模板", hint: "切换后点「生成 / 更新」，原交付包会先归档。") {
-                            Button("改用设置里的模板") {
-                                Task {
-                                    await model.perform { try await model.core?.pipeline.useGlobalCodeSource(data.dir) }
-                                    onChanged()
+                SettingsGroup(title: "代码模板", footer: "每个模板都是正好 60 页、每页 50 行，页眉换成软件名。已有交付包时换模板只重做代码 Word、PDF 和 TXT 开头，不调用 AI，旧文件先归档。", trailing: AnyView(Button("模板库") { model.go(.settings, tab: "code") }.buttonStyle(.borderless))) {
+                    let enabled = model.settings.codeTemplates.enabled
+                    SettingsRow(label: "用的模板", info: code["source"].truthyValue == nil ? nil : (code["locked"].isTruthy ? "已记在这个项目上，改设置不影响它。" : "还没记下，第一次生成交付包时按设置分配。")) {
+                        if let label = code["templateLabel"]?.string {
+                            Text(label)
+                        } else if let path = code["source"]?["path"]?.string {
+                            PathText(path: path)
+                        } else {
+                            Text("没有（只出说明书）").foregroundStyle(.secondary)
+                        }
+                        // 只有交付包的历史项目也能换（只重做代码材料）；已提交的不能
+                        if !data.submitted, !enabled.isEmpty {
+                            Menu("更换…") {
+                                ForEach(enabled) { entry in
+                                    Button(entry.label) { useTemplate(entry) }.disabled(entry.id == code["templateId"]?.string)
                                 }
-                            }.disabled(code["global"].truthyValue == nil || running)
+                            }
+                            .fixedSize()
+                            .disabled(running || switching)
                         }
                     }
                     if code["source"].truthyValue == nil, oldCodeDoc, !readOnly, !data.request["allowDropCodeDoc"].isTruthy {
-                        SettingsRow(label: "旧代码文档", hint: "重新生成交付包前要选一个") {
-                            Button("用设置里的") {
-                                Task {
-                                    await model.perform { try await model.core?.pipeline.useGlobalCodeSource(data.dir) }
-                                    onChanged()
-                                }
-                            }
-                            .disabled(code["global"].truthyValue == nil || running)
+                        SettingsRow(label: "旧代码文档", hint: "重新生成交付包前要选一个：在上面「更换…」里选模板，或者不要代码文档") {
                             Button("不要代码文档") {
                                 Task {
                                     await model.perform { try await model.core?.pipeline.updateRequest(data.dir, ["allowDropCodeDoc": true]) }
@@ -137,7 +138,7 @@ struct DeliveryTab: View {
                         }
                     }
                 }
-                SettingsGroup(title: "TXT 字段", footer: "只对这个项目生效，留空用设置里的默认值。") {
+                SettingsGroup(title: "TXT 字段", footer: "只对这个项目生效，留空用设置里的默认值（「设置 → TXT」）。") {
                     ForEach(TXT_LABELS, id: \.key) { field in
                         SettingsRow(label: field.label) {
                             CommitTextField(placeholder: model.settings.txtFields[field.key] ?? "", value: data.request["txtFields"]?[field.key]?.string ?? "") { value in
@@ -165,6 +166,21 @@ struct DeliveryTab: View {
             }
         } message: {
             Text("导出时检查截图栏宽，旧指南存在遮挡时用已有截图和正文重排指南 Word。TXT、代码 Word 和截图不变，不调用 AI；旧文件先归档。")
+        }
+    }
+
+    func useTemplate(_ entry: CodeTemplateEntry) {
+        guard let core = model.core else { return }
+        switching = true
+        Task {
+            defer { switching = false }
+            do {
+                let result = try await core.useCodeTemplate(data.dir, entry.id)
+                model.toast(.success, result["applied"].isTruthy ? "已换成\(entry.label)，代码 Word、PDF 已重做（60 页 × 每页 50 行）" : "已换成\(entry.label)，生成交付包时使用")
+            } catch {
+                model.toast(.error, messageOf(error))
+            }
+            onChanged()
         }
     }
 

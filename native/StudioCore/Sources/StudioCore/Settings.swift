@@ -9,9 +9,11 @@ public let DEFAULT_TXT_FIELDS: [String: String] = [
     "runPlatform": "Android操作系统5.0版以上",
     "runSupport": " Android Studio + Java jdk + Android SDK",
     "language": "JAVA",
+    // 和原始 TXT 模板一样固定写这个数，不随代码模板变（用户要求）
+    "sourceLines": "13534行",
 ]
 
-public let TXT_FIELD_ORDER = ["devHardware", "runHardware", "devOs", "devTools", "runPlatform", "runSupport", "language"]
+public let TXT_FIELD_ORDER = ["devHardware", "runHardware", "devOs", "devTools", "runPlatform", "runSupport", "language", "sourceLines"]
 
 public let PIPELINE_STEPS = ["plan", "prompts", "images", "gate", "content", "design", "receipt", "build"]
 
@@ -309,12 +311,14 @@ public struct Settings: Codable, Sendable, Hashable {
     public var pipeline = PipelineSettings()
     public var txtFields = DEFAULT_TXT_FIELDS
     public var codeDefaults = CodeDefaults()
+    /// 默认代码模板（没分配模板的旧项目用它）；有模板库以后指向模板库里的一份
     public var codeSource = CodeSourceSetting()
+    public var codeTemplates = CodeTemplateLibrary()
     public var pdf = PdfSettings()
     public var export = ExportSettings()
 
     public init() {}
-    enum CodingKeys: String, CodingKey { case schemaVersion, workspaceDir, image, providers, llm, pipeline, txtFields, codeDefaults, codeSource, pdf, export }
+    enum CodingKeys: String, CodingKey { case schemaVersion, workspaceDir, image, providers, llm, pipeline, txtFields, codeDefaults, codeSource, codeTemplates, pdf, export }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let d = Settings()
@@ -334,6 +338,7 @@ public struct Settings: Codable, Sendable, Hashable {
             // 旧版本把代码文件类型放在 codeDefaults 里
             codeSource = CodeSourceSetting(path: "", extensions: codeDefaults.extensions)
         }
+        codeTemplates = c.value(.codeTemplates, d.codeTemplates)
         pdf = c.value(.pdf, d.pdf)
         export = c.value(.export, d.export)
     }

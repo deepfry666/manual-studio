@@ -136,6 +136,7 @@ public final class StudioCore: @unchecked Sendable {
         summary["origin"] = state["origin"] ?? .null
         summary["grade"] = state["imported"]?["grade"].truthyValue ?? .null
         summary["readOnly"] = .bool(state["readOnly"].isTruthy)
+        summary["submitted"] = state["submitted"]?["at"].truthyValue ?? .null
         summary["status"] = !alive ? "missing" : state["readOnly"].isTruthy ? "readonly" : running ? "running" : state["status"] ?? "idle"
         summary["steps"] = .object(steps)
         summary["screens"] = .number(Double(screenCount > 0 ? screenCount : state["request"]?["screenCount"]?.int ?? 0))
@@ -286,7 +287,9 @@ public final class StudioCore: @unchecked Sendable {
         return models
     }
 
-    public func testVendor(_ id: String, model: String, vision: Bool) async throws -> (reply: String, ms: Double) {
+    /// 测试连接：先问一句话，再试一次「只输出 JSON」（规划、检查截图、写文字都要模型按 JSON 输出）。
+    /// jsonProblem 为 nil 表示能按 JSON 输出。
+    public func testVendor(_ id: String, model: String, vision: Bool) async throws -> (reply: String, ms: Double, jsonProblem: String?, diagnostics: String?) {
         let settings = try await settingsStore.get()
         guard let vendor = settings.llm.vendors.first(where: { $0.id == id }) else { throw StudioError("厂商不存在") }
         let apiKey = await secrets.get(SecretIds.llmVendor(id))
@@ -295,8 +298,24 @@ public final class StudioCore: @unchecked Sendable {
         let content: JSON = vision
             ? .array([["type": "text", "text": "这张图主要是什么颜色？只回答一个词。"], ["type": "image_url", "image_url": ["url": .string(vendor.preset == "zhipu" ? Rx.replaceFirst("^data:[^;]+;base64,", in: imageUrl, with: "") : imageUrl)]]])
             : "回复「连接正常」四个字。"
-        let result = try await chatCompletion(vendor: vendor, apiKey: apiKey, model: model, messages: [["role": "user", "content": content]], maxTokens: 50, jsonMode: false, http: http, timeoutSec: 60)
-        return (result.text.jsSlice(0, 100), nowMs() - started)
+        // 输出额度给宽一点：推理模型会先用掉一部分去「思考」，太少的话正文还没开始写就到上限了
+        let result = try await chatCompletion(vendor: vendor, apiKey: apiKey, model: model, messages: [["role": "user", "content": content]], maxTokens: 1024, jsonMode: false, http: http, timeoutSec: 60)
+        let ms = nowMs() - started
+        var jsonProblem: String?
+        var diagnostics: [String] = []
+        if let reason = result.emptyReason { diagnostics.append("【一句话测试】\(reason)\n\(result.diagnostics)") }
+        do {
+            let schema: JSON = ["type": "object", "required": ["ok", "steps"], "properties": ["ok": ["type": "boolean"], "steps": ["type": "array", "items": ["type": "string"]]]]
+            _ = try await chatJson(vendor: vendor, apiKey: apiKey, model: model, request: ChatJsonRequest(system: "你是接口测试助手。", user: "输出 JSON：ok 为 true，steps 为三个中文短句组成的数组，描述打开一个记账 App 的三个步骤。", schema: schema, temperature: 0.2, maxTokens: 1024), http: http)
+        } catch {
+            jsonProblem = messageOf(error)
+            if let detail = (error as? LlmError)?.detail { diagnostics.append("【按 JSON 输出测试】\n\(detail)") }
+            // 再要一次原始返回，看清楚线路到底回了什么
+            if let raw = try? await chatCompletion(vendor: vendor, apiKey: apiKey, model: model, messages: [["role": "system", "content": "只输出一个 JSON 对象。"], ["role": "user", "content": "输出 {\"ok\": true}"]], maxTokens: 1024, http: http, timeoutSec: 60) {
+                diagnostics.append("【按 JSON 输出时线路的原始返回】\n\(raw.diagnostics)")
+            }
+        }
+        return (result.text.jsSlice(0, 100), ms, jsonProblem, diagnostics.isEmpty ? nil : diagnostics.joined(separator: "\n\n"))
     }
 
     public func setAssignment(_ step: String, _ value: LlmAssignment?) async throws {
@@ -356,7 +375,11 @@ public final class StudioCore: @unchecked Sendable {
         return .obj([
             "dir": .string(dir), "state": state, "plan": (plan ?? nil) ?? .null, "content": content ?? .null, "screens": .array(screens),
             "bundleDir": .string(bundleDir), "bundleFiles": JSON(bundleFiles), "running": .bool(pipeline.isRunning(dir)), "progress": pipeline.getProgress(dir) ?? .null,
-            "codeSource": .obj(["source": code.source ?? .null, "locked": .bool(code.locked), "global": settings.codeSource.path.isEmpty ? .null : settings.codeSource.json]),
+            "codeSource": .obj([
+                "source": code.source ?? .null, "locked": .bool(code.locked), "global": settings.codeSource.path.isEmpty ? .null : settings.codeSource.json,
+                "templateId": JSON.orNull(settings.codeTemplates.entry(forPath: code.source?["path"]?.string ?? "")?.id),
+                "templateLabel": JSON.orNull(settings.codeTemplates.entry(forPath: code.source?["path"]?.string ?? "")?.label),
+            ]),
             "contentHistory": .array(contentHistory(dir)),
             "externalEdits": JSON(externallyEditedFiles(dir, state)),
         ])
@@ -377,16 +400,34 @@ public final class StudioCore: @unchecked Sendable {
         if !earliestDate.isEmpty && !validContentDate(earliestDate) { throw StudioError("最早日期请填写有效的 YYYY-MM-DD 日期，或留空") }
         if !earliestDate.isEmpty, earliestDate > (contentDate.isEmpty ? localDateKey() : contentDate) { throw StudioError("最早日期不能晚于内容日期") }
         try FS.mkdirp(dir)
-        // 版本号自动判断；代码来源用总设置里的（第一次生成交付包时记下来）
+        // 代码模板：指定了就用指定的，否则按模板库的分配规则（默认轮流平均分）
+        try? await migrateCodeTemplateLibrary()
+        let library = try await settingsStore.get().codeTemplates
+        var codeSource: JSON = .null
+        if !library.enabled.isEmpty {
+            let wanted = request["codeTemplateId"]?.string ?? ""
+            let entry: CodeTemplateEntry?
+            if let chosen = library.entry(wanted), chosen.enabled { entry = chosen }
+            else {
+                var usage = codeTemplateUsage(library, try await settingsStore.get())
+                entry = library.pick(&usage)
+            }
+            if let entry { codeSource = codeSourceJSON(dataDir, entry) }
+        }
+        // 版本号自动判断
         let versionPolicy = request["versionPolicy"]?.string == "separate-metadata" ? "separate-metadata" : detectVersion(softwareName) != nil ? "in-name" : "none"
         var fields = request
         fields["softwareName"] = .string(softwareName)
         fields["versionPolicy"] = .string(versionPolicy)
-        fields["codeSource"] = .null
+        fields["codeSource"] = codeSource
+        fields["codeTemplateId"] = nil
+        if !codeSource.isNull { fields["codeSourceLocked"] = true }
         fields["workspaceDir"] = nil
         fields["contentDate"] = .string(contentDate.isEmpty ? localDateKey() : contentDate)
         fields["earliestDate"] = .string(earliestDate)
         fields["createdAt"] = request["createdAt"].truthyValue ?? .string(localDateKey())
+        // 1.6.0 起新建的项目：生图提示词加内容红线（旧项目不加，免得截图全部重生）
+        fields["policyVersion"] = 2
         let state = newState(fields)
         try await projectStore.write(dir, state)
         let addedAt = isoNow()
@@ -397,7 +438,8 @@ public final class StudioCore: @unchecked Sendable {
     }
 
     /// 批量新建：每行一个软件名，可选用逗号带上 截图数、重点功能、补充说明。
-    public func createProjectsFromList(_ text: String, screenCount: Int?, platform: String, wantDesign: Bool, contentDate: String = "", earliestDate: String = "") async throws -> (created: [String], errors: [String]) {
+    /// codeTemplateId：全部用这个模板；不填按模板库的分配规则，一批里也保持平均。
+    public func createProjectsFromList(_ text: String, screenCount: Int?, platform: String, wantDesign: Bool, contentDate: String = "", earliestDate: String = "", codeTemplateId: String? = nil) async throws -> (created: [String], errors: [String]) {
         if !contentDate.isEmpty && !validContentDate(contentDate) { throw StudioError("内容日期请填写有效的 YYYY-MM-DD 日期") }
         if !earliestDate.isEmpty && !validContentDate(earliestDate) { throw StudioError("最早日期请填写有效的 YYYY-MM-DD 日期，或留空") }
         let rows = parseBatchList(text)
@@ -405,6 +447,11 @@ public final class StudioCore: @unchecked Sendable {
         var created: [String] = []
         var errors: [String] = []
         var seen = Set<String>()
+        try? await migrateCodeTemplateLibrary()
+        let settings = try await settingsStore.get()
+        var library = settings.codeTemplates
+        if let codeTemplateId, library.entry(codeTemplateId)?.enabled == true { library.assign = "fixed"; library.fixedId = codeTemplateId }
+        var usage = codeTemplateUsage(library, settings)
         for row in rows {
             do {
                 if seen.contains(row.softwareName) { throw StudioError("列表里重复了") }
@@ -413,6 +460,7 @@ public final class StudioCore: @unchecked Sendable {
                     "softwareName": .string(row.softwareName), "screenCount": JSON.orNull(row.screenCount ?? screenCount), "emphasis": .string(row.emphasis),
                     "notes": .string(row.notes), "platform": .string(platform), "wantDesign": .bool(wantDesign),
                     "contentDate": .string(contentDate), "earliestDate": .string(earliestDate),
+                    "codeTemplateId": JSON.orNull(library.pick(&usage)?.id),
                 ]))
                 created.append(dir)
             } catch {
@@ -432,6 +480,28 @@ public final class StudioCore: @unchecked Sendable {
         return (created, errors)
     }
 
+    /// 标记或取消「已提交」。已提交的项目只读，批量操作自动跳过。正在运行或排队的不能标记。
+    public func setSubmitted(_ dirs: [String], _ submitted: Bool) async throws -> (changed: [String], skipped: [String]) {
+        var changed: [String] = []
+        var skipped: [String] = []
+        let queued = Set(batch.list().items.filter { ["queued", "paused", "running"].contains($0["status"]?.string ?? "") }.compactMap { $0["projectDir"]?.string })
+        let at = isoNow()
+        for dir in uniqued(dirs) {
+            if submitted, pipeline.isRunning(dir) || queued.contains(dir) {
+                skipped.append("\(Path.basename(dir))：正在运行或排队")
+                continue
+            }
+            guard projectStore.exists(dir) else { skipped.append("\(Path.basename(dir))：项目不存在"); continue }
+            try await projectStore.update(dir) { state in
+                state["submitted"] = submitted ? .obj(["at": .string(at)]) : nil
+                appendLog(&state, submitted ? "标记为已提交（只读）" : "取消已提交")
+            }
+            changed.append(dir)
+            emit(.obj(["type": "project", "projectDir": .string(dir)]))
+        }
+        return (changed, skipped)
+    }
+
     /// 从列表移除。deleteFolder 为 true 时连项目文件夹一起移到废纸篓（可以从废纸篓恢复）。
     public func removeFromList(_ dir: String, deleteFolder: Bool = false) async throws {
         if pipeline.isRunning(dir) { throw StudioError("项目正在运行，先停止") }
@@ -440,6 +510,7 @@ public final class StudioCore: @unchecked Sendable {
             let target = Path.resolve(dir)
             // 只读项目（比如 skill 自带的示例）的文件夹不是这个软件的，不删
             if (try? projectStore.read(dir))??["readOnly"].isTruthy == true { throw StudioError("只读项目的文件夹不能删除，只能从列表移除") }
+            if isSubmitted((try? projectStore.read(dir)) ?? nil) { throw StudioError("已提交的项目文件夹不能删除，只能从列表移除；要删除请先取消已提交") }
             // 防止误删工作区、主目录这类上层文件夹，以及不像项目的文件夹
             let protected = [settings.workspaceDir, NSHomeDirectory(), Path.join(NSHomeDirectory(), "Desktop"), Path.join(NSHomeDirectory(), "Documents"), Path.join(NSHomeDirectory(), "Downloads"), "/"].map(Path.resolve)
             let markers = ["content.json", "screen-plan.json", "project-manifest.json", "generation-record.json", "screens"]
@@ -488,6 +559,7 @@ public final class StudioCore: @unchecked Sendable {
     }
 
     public func renameSoftware(_ dir: String, _ newName: String) async throws -> String {
+        try assertNotSubmitted(try projectStore.read(dir))
         let name = newName.jsTrimmed
         try assertSafeSoftwareName(name)
         if pipeline.isRunning(dir) { throw StudioError("项目正在运行，先停止") }
@@ -584,15 +656,15 @@ public final class StudioCore: @unchecked Sendable {
         ])
     }
 
-    /// 保存不可变的模板副本，项目锁定后不受下载目录移动或后续模板替换影响。
+    /// 把一份模板加进模板库并设为默认模板（已在库里的直接设为默认）。
     public func importCodeTemplate(_ path: String) async throws {
-        let bytes = try FS.read(path)
-        let template = try CodeWordTemplate(data: bytes)
-        let target = Path.join(dataDir, "code-templates", "\(template.sha256).docx")
-        if FS.exists(target) {
-            guard try FS.read(target) == bytes else { throw StudioError("已保存的代码模板被修改，请恢复模板副本") }
-        } else { try FS.write(target, bytes) }
-        try await updateSettings(["codeSource": ["path": .string(target), "extensions": [".java"]]])
+        let raw = Path.extname(path).lowercased() == ".doc" ? try await convertDocToDocx(path) : try FS.read(path)
+        let template = try CodeWordTemplate(data: raw)
+        let results = try await addCodeTemplates([path])
+        if let first = results.first, !first["ok"].isTruthy, !first["error"].text.hasPrefix("已经在模板库里了") { throw StudioError(first["error"].text) }
+        let library = try await settingsStore.get().codeTemplates
+        let id = library.entries.first { $0.id == template.sha256 || $0.sourceSha == sha256Hex(try! FS.read(path)) }?.id ?? template.sha256
+        try await updateSettings(["codeSource": ["path": .string(codeTemplateFile(dataDir, id)), "extensions": [".java"]]])
     }
 
     /// 把交付包打成 zip，放在项目文件夹里。

@@ -5,32 +5,31 @@ import Testing
 
 @Suite("Word 代码模板", .serialized)
 struct CodeTemplateTests {
-    @Test("新模板保留正文、样式和部件，均匀分配成60页，更新页眉")
+    @Test("模板整理成 60 页 × 每页 50 行：前 1500 + 后 1500 行，代码一字不改，只换页眉")
     func templateFidelity() throws {
         let original = try FS.read(testCodeTemplatePath)
         let code = try collectCodeSource(path: testCodeTemplatePath, extensions: [".java"])
         let template = try #require(code.wordTemplate)
-        #expect(code.lineCount == 3322)
-        #expect(code.nonEmptyLines == 3229)
         #expect(code.estimatedPages == 60)
+        #expect(template.sourceRows == 3322)
+        #expect(template.cropped)
+        #expect(template.rows.count == 3000)
+        let raw = try CodeWordTemplate.readLines(try #require(try ZipReader(original).read("word/document.xml")))
+        #expect(template.lines == Array(raw.prefix(1500)) + Array(raw.suffix(1500)), "前后各 1500 行，顺序、空白都不变")
         let dir = try FS.makeTempDirectory(prefix: "code-template-")
         defer { FS.remove(dir) }
         let name = "批量模板测试 V1.0"
         try template.write(project: dir, software: name)
         let target = Path.join(dir, name, "\(name)\(CODE_SUFFIX).docx")
         let result = try CodeWordTemplate(data: FS.read(target))
-        #expect(result.lines == template.lines, "代码内容、顺序、空白行都必须不变")
-        let before = try ZipReader(original)
+        #expect(result.lines == template.lines, "交付的代码 Word 读回来正文不变")
+        #expect(result.sourceRows == 3322, "读回整理好的模板不再重新裁剪")
         let after = try ZipReader(FS.read(target))
-        #expect(before.entries.map(\.name) == after.entries.map(\.name))
-        let editable = ["word/document.xml", "word/header1.xml", "docProps/app.xml", "docProps/custom.xml"]
-        for entry in before.entries where !entry.isDirectory && !editable.contains(entry.name) {
-            #expect(try before.read(entry) == after.read(entry.name), "保留部件 \(entry.name)")
-        }
         let xml = String(decoding: try #require(try after.read("word/document.xml")), as: UTF8.self)
-        let originalXml = String(decoding: try #require(try before.read("word/document.xml")), as: UTF8.self)
-        #expect(Rx.count("> +</w:t>", xml) == Rx.count("> +</w:t>", originalXml), "空白段内的空格必须原样保留")
-        #expect(Rx.count("<w:pageBreakBefore(?:\\s[^>]*)?/>", xml) == 59)
+        #expect(Rx.count("> +</w:t>", xml) == template.lines.filter { !$0.isEmpty && $0.jsTrimmed.isEmpty }.count, "纯空格的行原样保留")
+        #expect(xml.contains(#"<w:docGrid w:type="lines" w:linePitch="283"/>"#), "每页 50 行的行网格")
+        #expect(Rx.count(#"<w:widowControl w:val="0"/>"#, xml) == template.lines.count, "关掉孤行控制，长行可以跨页")
+        #expect(Rx.count("<w:pageBreakBefore", xml) == 0, "不靠分页符，按行网格自然分页")
         let header = String(decoding: try #require(try after.read("word/header1.xml")), as: UTF8.self)
         #expect(header.contains(name))
         #expect(!header.contains(TEST_TEMPLATE_HEADER))
@@ -46,6 +45,8 @@ struct CodeTemplateTests {
         #expect(Rx.count("<w:tabs>", header2) == 1)
         #expect(try codeExactPages(target) == 60)
         #expect(try FS.read(testCodeTemplatePath) == original)
+        // 整理是确定的：同一份模板两次整理出完全一样的文件（模板库靠指纹认出同一份）
+        #expect(try CodeWordTemplate(data: original).data == template.data)
     }
 
     @Test("不足页数的PDF拒绝交付，损坏Word不会被当作源码")
@@ -69,7 +70,7 @@ struct CodeTemplateTests {
         let settings = try await ctx.core.settingsStore.get()
         let sourcePath = settings.codeSource.path
         #expect(Path.isInside(ctx.dataDir, sourcePath))
-        #expect(try FS.read(sourcePath) == FS.read(testCodeTemplatePath))
+        #expect(try CodeWordTemplate(data: FS.read(sourcePath)).lines == CodeWordTemplate(data: FS.read(testCodeTemplatePath)).lines, "模板库里存的是整理好的那份")
         let restored = try await SettingsStore(dataDir: ctx.dataDir).get()
         #expect(restored.codeSource.path == sourcePath)
         let a = try await ctx.create("模板批量甲 V1.0", screenCount: 1)
@@ -92,6 +93,10 @@ struct CodeTemplateTests {
             #expect(document.page(at: 0)?.string?.contains("第 1 页") == true, "代码 PDF 页眉要有页码")
             #expect(document.page(at: 59)?.string?.contains("第 60 页") == true)
             #expect(document.page(at: 0)?.string?.contains(name) == true)
+            let template = try CodeWordTemplate(data: FS.read(sourcePath))
+            #expect(document.page(at: 0)?.string?.contains(template.rows[0].jsTrimmed) == true, "第 1 页从第 1 行开始")
+            #expect(document.page(at: 59)?.string?.contains(template.rows[2999].jsTrimmed) == true, "第 60 页以第 3000 行结束")
+            #expect(document.page(at: 1)?.string?.contains(template.rows[50].jsTrimmed) == true, "每页正好 50 行")
             #expect(project["state"]?["lastBuild"]?["codePdfPages"]?.int == pages)
             let manifest = try readJSONFile(projectPaths(dir).manifest)
             #expect(manifest["codePagination"]?["pdfPages"]?.int == pages)

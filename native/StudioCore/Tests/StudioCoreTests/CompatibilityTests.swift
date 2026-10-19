@@ -242,9 +242,14 @@ struct CompatibilityTests {
         let settings = try fixtures["settings"]!["stored"]!.decode(Settings.self)
         let merged = fixtures["settings"]!["merged"]!
         let ours = try JSON.encode(settings)
-        for key in ["image", "pipeline", "txtFields", "codeDefaults", "pdf", "export"] {
+        for key in ["image", "pipeline", "codeDefaults", "pdf", "export"] {
             #expect(ours[key]!.stableStringify() == merged[key]!.stableStringify(), "\(key)")
         }
+        // 源程序量是 1.6.0 新加的字段（固定 13534行），其余 TXT 字段和 Electron 版一致
+        var txt = ours["txtFields"]!
+        #expect(txt["sourceLines"]?.string == "13534行")
+        txt["sourceLines"] = nil
+        #expect(txt.stableStringify() == merged["txtFields"]!.stableStringify())
         // 旧版本把代码文件类型放在 codeDefaults 里（Electron 版在 settingsStore.load 里迁移）
         #expect(settings.codeSource.extensions == [".kt"])
     }
@@ -317,7 +322,7 @@ struct CompatibilityTests {
         #expect(plan?.stableStringify() == fixtures["readPlan"]!.stableStringify())
     }
 
-    @Test("指南图片改为安全尺寸，其余Word XML保持一致，TXT省略运行环境")
+    @Test("指南图片改为安全尺寸，其余Word XML保持一致，TXT 和原始模板一样 9 行")
     func docx() throws {
         let doc = fixtures["docx"]!
         let dir = try FS.makeTempDirectory(prefix: "docx-")
@@ -329,10 +334,9 @@ struct CompatibilityTests {
         let region = try createGuideDocx(project: dir, software: software, content: doc["content"]!)
         #expect(region.serialized() == doc["region"]!.serialized())
         try createCodeDocx(project: dir, software: software, body: doc["codeBody"]!.string!)
-        try createGuideTxt(project: dir, software: software, overview: doc["content"]!["cover"]!["overview"]!.string!, fields: ["devOs": "macOS 26", "language": "Swift", "languageOverride": "true"], sourceLines: 123)
-        #expect(try FS.readText(Path.join(dir, software, "\(software)指南.txt")) == doc["txt"]!.string!.components(separatedBy: "\r\n").filter { line in
-            !["【运行的硬件环境】", "【该软件的运行平台/操作系统】", "【软件运行支撑环境/支持软件】"].contains(where: line.hasPrefix)
-        }.joined(separator: "\r\n"))
+        try createGuideTxt(project: dir, software: software, overview: doc["content"]!["cover"]!["overview"]!.string!, fields: ["devOs": "macOS 26", "language": "Swift", "languageOverride": "true", "sourceLines": "123行"])
+        // 和 Electron 版、原始模板一样的 9 行开头
+        #expect(try FS.readText(Path.join(dir, software, "\(software)指南.txt")) == doc["txt"]!.string!)
         for (kind, file) in [("guide", "\(software)指南.docx"), ("code", "\(software)指南_代码-（JAVA）.docx")] {
             let zip = try ZipReader(try FS.read(Path.join(dir, software, file)))
             let expected = doc[kind]!

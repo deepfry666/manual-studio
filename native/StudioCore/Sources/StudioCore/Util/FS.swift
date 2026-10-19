@@ -10,6 +10,14 @@ public struct StudioError: Error, LocalizedError, Sendable, CustomStringConverti
     public var description: String { message }
 }
 
+/// 报错里不直接写临时文件夹路径（对用户没用），而是挂一个标记，界面上换成「查看诊断文件」按钮。
+public func diagnosticsTag(_ path: String) -> String { "\n[诊断文件:\(path)]" }
+
+public func splitDiagnostics(_ message: String) -> (text: String, path: String?) {
+    guard let match = Rx.match(#"\n?\[诊断文件:([^\]]+)\]\s*$"#, message), let path = match[1] else { return (message, nil) }
+    return (message.replacingOccurrences(of: match[0] ?? "", with: ""), path)
+}
+
 /// 错误的中文说明（和 JS 的 error.message 一致）。
 public func messageOf(_ error: Error) -> String {
     if let error = error as? LocalizedError, let text = error.errorDescription { return text }
@@ -274,11 +282,43 @@ public func isoNow() -> String { isoString(Date()) }
 /// `Date.parse(iso)`（毫秒），解析不了返回 nil。
 public func parseISO(_ text: String?) -> Double? {
     guard let text else { return nil }
+    // 软件自己写的时间都是 2026-10-16T06:26:35.359Z 这种格式：直接按位置算，比系统的日期解析快几十倍（列表每次刷新要解析上千个）
+    if let fast = fastParseISO(text) { return fast }
     isoLock.lock()
     defer { isoLock.unlock() }
     if let date = isoFormatter.date(from: text) { return date.timeIntervalSince1970 * 1000 }
     let plain = ISO8601DateFormatter()
     return plain.date(from: text).map { $0.timeIntervalSince1970 * 1000 }
+}
+
+/// 只认 UTC 的 `YYYY-MM-DDTHH:MM:SS[.fff]Z`，别的格式返回 nil 交给系统解析。
+func fastParseISO(_ text: String) -> Double? {
+    let bytes = Array(text.utf8)
+    guard bytes.count == 20 || bytes.count == 24, bytes[4] == 45, bytes[7] == 45, bytes[10] == 84, bytes[13] == 58, bytes[16] == 58, bytes.last == 90 else { return nil }
+    func number(_ from: Int, _ count: Int) -> Int? {
+        var value = 0
+        for index in from..<(from + count) {
+            let digit = Int(bytes[index]) - 48
+            guard (0...9).contains(digit) else { return nil }
+            value = value * 10 + digit
+        }
+        return value
+    }
+    guard let year = number(0, 4), let month = number(5, 2), let day = number(8, 2), let hour = number(11, 2), let minute = number(14, 2), let second = number(17, 2),
+          (1...12).contains(month), (1...31).contains(day), hour < 24, minute < 60, second < 61 else { return nil }
+    var millis = 0
+    if bytes.count == 24 {
+        guard bytes[19] == 46, let fraction = number(20, 3) else { return nil }
+        millis = fraction
+    }
+    // 公历日期换算成 1970-01-01 起的天数（Howard Hinnant 的 days_from_civil）
+    let y = month <= 2 ? year - 1 : year
+    let era = (y >= 0 ? y : y - 399) / 400
+    let yoe = y - era * 400
+    let doy = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
+    let days = era * 146_097 + doe - 719_468
+    return Double(((days * 24 + hour) * 60 + minute) * 60 + second) * 1000 + Double(millis)
 }
 
 /// `date.toISOString().replace(/[:.]/g, "-")`

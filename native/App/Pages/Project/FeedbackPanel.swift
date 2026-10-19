@@ -3,7 +3,7 @@ import SwiftUI
 
 private let ACTION_TYPE: [String: (label: String, tone: Tone)] = [
     "replan": ("重新规划", .red),
-    "image": ("重生截图", .blue),
+    "image": ("重新生成截图", .blue),
     "text": ("重写说明", .green),
     "overview": ("改封面介绍", .cyan),
     "design": ("改设计说明", .purple),
@@ -51,8 +51,8 @@ struct FeedbackPanel: View {
         let options = FeedbackTarget.options(data)
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                Text("修改意见").font(.title3.weight(.semibold))
-                Text("看到问题就记一条，先不执行；攒够了点下面的按钮，确认后一次改完。知道要改哪一张图时，在「改哪里」里选上，就会直接改那里。")
+                Text("批量修改意见").font(.title3.weight(.semibold))
+                Text("一次要改很多处、或者说不清改哪一屏时用这里：看到问题就记一条，攒够了点下面的按钮，确认后一次改完。只改某一屏的图或文字，直接在编辑页那一屏点「改图」「只改文字」更快。")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                 HStack(spacing: 8) {
@@ -236,7 +236,7 @@ struct FeedbackPlanSheet: View {
         let images = chosen.filter { $0["type"]?.string == "image" }.reduce(0) { $0 + ($1["target"]?.string == "all" ? screenCount : 1) }
         let texts = chosen.filter { $0["type"]?.string == "text" }.count
         let extras = chosen.filter { ["overview", "design"].contains($0["type"]?.string ?? "") }.compactMap { ACTION_TYPE[$0["type"]?.string ?? ""]?.label }
-        return ([images > 0 ? "重生 \(images) 张截图（改过图的屏，说明会按新图重写；验收时会核对修改是否改到）" : "", texts > 0 ? "重写 \(texts) 屏说明" : ""] + extras).filter { !$0.isEmpty }.joined(separator: "，")
+        return ([images > 0 ? "重新生成 \(images) 张截图（改过图的屏，说明会按新图重写；检查时会核对修改是否改到）" : "", texts > 0 ? "重写 \(texts) 屏说明" : ""] + extras).filter { !$0.isEmpty }.joined(separator: "，")
     }
 
     var body: some View {

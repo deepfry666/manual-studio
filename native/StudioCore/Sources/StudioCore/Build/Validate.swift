@@ -95,6 +95,8 @@ public func validateDelivery(projectDir: String, bundleDir: String, softwareName
     }
     let captionHits = findBrandHits([jsJoin(screens.map { $0["title"] ?? .null }, "\n")], tokens.filter { $0 != softwareName })
     if !captionHits.isEmpty { warnings.append("界面标题里含有软件名片段：\(captionHits.joined(separator: "、"))") }
+    let redHits = redLineHits(guideVisibleTexts(content))
+    if !redHits.isEmpty { warnings.append("指南里有可能涉及政府职能或红线的说法：\(redHits.prefix(8).joined(separator: "、"))。可以在编辑页点「只改文字」重写") }
 
     // 指南 Word
     if let guide = expectedFile["guideDocx"] {

@@ -3,69 +3,134 @@ import Foundation
 import FoundationXML
 #endif
 
-/// Word 模板直接复制，正文和样式保留；按源代码段落分页，不补空白、不重复代码。
+/// 代码 Word 模板。用户给的 Word 只取代码正文（每段一行，一字不改；制表符换成 4 个空格），
+/// 按 CodeLayout 选成正好 60 页 × 50 行，再写成统一版式的「整理好的模板」。
+/// 模板库里存的就是整理好的这份；出交付包时只换页眉里的软件名、加页码，正文和版式原样使用。
 public struct CodeWordTemplate: Sendable {
-    public static let targetPages = 60
-    public static let minimumNonEmptyLines = 3001
-    public static let minimumPages = 60
+    public static let targetPages = CodeLayout.pages
+    /// 整理好的模板在自定义属性里带这个标记，读回时不再重新选行
+    static let layoutMark = "ManualStudioCodeLayout"
+    static let layoutValue = "60x50"
+
+    /// 整理好的模板（docx 字节）
     public let data: Data
+    /// 选进来的代码行（段落），印出来正好 3000 行
     public let lines: [String]
-    public var plannedPages: Int { Self.targetPages }
+    /// 原模板印出来一共多少行；超过 3000 行的才会被裁
+    public let sourceRows: Int
+    public let sourceLineCount: Int
+    public var cropped: Bool { sourceRows > CodeLayout.totalRows }
+    public var plannedPages: Int { CodeLayout.pages }
     public var nonEmptyLines: Int { lines.filter { !$0.jsTrimmed.isEmpty }.count }
-    public var pageRanges: [Range<Int>] {
-        (0..<Self.targetPages).map { page in
-            (page * lines.count / Self.targetPages)..<((page + 1) * lines.count / Self.targetPages)
-        }
-    }
+    /// 页面上的每一行（折行后），正好 3000 行
+    public var rows: [String] { lines.flatMap(codeRows) }
     public var sha256: String { sha256Hex(data) }
 
+    /// 读整理好的模板，或把用户给的原始 Word 整理成统一版式（只在内存里，不改原文件）。
     public init(data: Data) throws {
         guard data.count <= MAX_CODE_BYTES else { throw StudioError("Word 代码模板超过 30MB") }
         let zip = try ZipReader(data)
-        guard zip.entries.contains(where: { $0.name == "docProps/custom.xml" }) else {
-            throw StudioError("Word 代码模板缺少自定义属性，请使用内置新模板")
-        }
         guard let bodyData = try zip.read("word/document.xml") else { throw StudioError("Word 模板缺少正文") }
-        let document = try Self.parse(bodyData)
+        let custom = try zip.read("docProps/custom.xml").map { String(decoding: $0, as: UTF8.self) } ?? ""
+        let raw = try Self.readLines(bodyData)
+        if custom.contains("name=\"\(Self.layoutMark)\"") {
+            guard raw.reduce(0, { $0 + codeRowCount($1) }) == CodeLayout.totalRows else { throw StudioError("整理好的代码模板行数不对，请重新添加模板") }
+            self.data = data
+            self.lines = raw
+            self.sourceRows = Int(Rx.match(#"name="ManualStudioSourceRows"[^>]*>\s*<vt:i4>([0-9]+)<"#, custom)?[1] ?? "") ?? CodeLayout.totalRows
+            self.sourceLineCount = Int(Rx.match(#"name="ManualStudioSourceLines"[^>]*>\s*<vt:i4>([0-9]+)<"#, custom)?[1] ?? "") ?? raw.count
+            return
+        }
+        let total = raw.reduce(0, { $0 + codeRowCount($1) })
+        guard let selected = selectCodeLines(raw) else {
+            if total < CodeLayout.totalRows {
+                throw StudioError("这份代码印出来只有 \(total) 行，不够 60 页 × 50 行（3000 行），还差 \(CodeLayout.totalRows - total) 行")
+            }
+            throw StudioError("这份代码没法正好排成 60 页 × 50 行，请换一份模板")
+        }
+        self.lines = selected
+        self.sourceRows = total
+        self.sourceLineCount = raw.count
+        self.data = Self.canonicalDocx(lines: selected, sourceRows: total, sourceLines: raw.count, sourceSha: sha256Hex(data))
+    }
+
+    /// 只认每段一行的纯代码正文；表格、图片、修订、段内换行这类排版没法逐行对应，直接拒绝。
+    static func readLines(_ bodyData: Data) throws -> [String] {
+        let document = try XMLDocument(data: bodyData, options: [.nodePreserveAll, .nodeLoadExternalEntitiesNever])
         let bodies = try document.nodes(forXPath: "/*[local-name()='document']/*[local-name()='body']")
         guard let body = bodies.first as? XMLElement else { throw StudioError("Word 模板缺少正文") }
         let children = (body.children ?? []).compactMap { $0 as? XMLElement }
-        guard children.allSatisfy({ ["p", "sectPr"].contains($0.localName ?? "") }),
-              children.filter({ $0.localName == "sectPr" }).count == 1,
-              try body.nodes(forXPath: ".//*[local-name()='sectPr']").count == 1,
-              try body.nodes(forXPath: ".//*[local-name()='drawing' or local-name()='pict' or local-name()='del' or local-name()='ins' or local-name()='br' or local-name()='sdt' or local-name()='fldChar' or local-name()='instrText']").isEmpty
-        else { throw StudioError("代码 Word 模板需为单节、每段一行的纯代码正文；不支持表格、图片、修订或段内换行") }
+        guard children.allSatisfy({ ["p", "sectPr", "bookmarkStart", "bookmarkEnd"].contains($0.localName ?? "") }) else {
+            throw StudioError("代码 Word 模板只能有代码正文，不支持表格、图片或文本框")
+        }
+        guard try body.nodes(forXPath: ".//*[local-name()='drawing' or local-name()='pict' or local-name()='del' or local-name()='ins' or local-name()='sdt' or local-name()='tbl' or local-name()='txbxContent']").isEmpty,
+              try body.nodes(forXPath: ".//*[local-name()='br'][not(@*[local-name()='type']) or @*[local-name()='type']='textWrapping']").isEmpty
+        else { throw StudioError("代码 Word 模板需为每段一行的纯代码正文；不支持表格、图片、修订或段内换行") }
         let paragraphs = children.filter { $0.localName == "p" }
         guard !paragraphs.isEmpty else { throw StudioError("Word 代码模板正文为空") }
-        self.data = data
         let reader = CodeTemplateLines()
         let parser = XMLParser(data: bodyData)
         parser.shouldProcessNamespaces = true
         parser.shouldResolveExternalEntities = false
         parser.delegate = reader
         guard parser.parse(), reader.lines.count == paragraphs.count else { throw StudioError("Word 模板正文无法完整读取") }
-        self.lines = reader.lines
+        let lines = reader.lines.map { line in
+            String(line.replacingOccurrences(of: "\t", with: "    ").unicodeScalars.filter { $0.value >= 0x20 || $0 == "\t" })
+        }
         guard lines.contains(where: { !$0.jsTrimmed.isEmpty }) else { throw StudioError("Word 代码模板正文为空") }
-        guard nonEmptyLines >= Self.minimumNonEmptyLines else {
-            throw StudioError("Word 代码模板只有 \(nonEmptyLines) 行非空代码，需要超过 3,000 行；请选择完整模板")
-        }
-        for range in pageRanges {
-            guard lines[range].contains(where: { !$0.jsTrimmed.isEmpty }) else {
-                throw StudioError("Word 代码模板包含整页空白段落，请选择完整代码模板")
-            }
-        }
-        let headers = zip.entries.filter { $0.name.hasPrefix("word/header") && $0.name.hasSuffix(".xml") }
-        guard !headers.isEmpty else { throw StudioError("Word 代码模板需要软件名页眉") }
-        for entry in headers {
-            let header = try Self.parse(Data(Self.removePageNumber(String(decoding: try zip.read(entry), as: UTF8.self)).utf8))
-            guard try header.nodes(forXPath: "//*[local-name()='fldChar' or local-name()='instrText' or local-name()='drawing' or local-name()='pict']").isEmpty,
-                  try header.nodes(forXPath: "//*[local-name()='t']").contains(where: { !($0.stringValue ?? "").jsTrimmed.isEmpty })
-            else { throw StudioError("Word 代码模板页眉需为纯文本软件名") }
-        }
+        return lines
     }
 
-    private static func parse(_ data: Data) throws -> XMLDocument {
-        try XMLDocument(data: data, options: [.nodePreserveAll, .nodeLoadExternalEntitiesNever])
+    // MARK: 整理好的模板
+
+    private static let W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    private static let R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    private static let font = "新宋体"
+    static var runProps: String {
+        #"<w:rPr><w:rFonts w:ascii="\#(font)" w:hAnsi="\#(font)" w:eastAsia="\#(font)" w:cs="\#(font)"/><w:sz w:val="18"/><w:szCs w:val="18"/></w:rPr>"#
+    }
+    /// 关孤行控制（一行代码折成两行时允许跨页）、允许西文在单词中间换行、关中英文自动空格和中文标点规则，
+    /// Word 的折行和分页就和 CodeLayout 算的一致。
+    static var paraProps: String {
+        #"<w:pPr><w:widowControl w:val="0"/><w:wordWrap w:val="0"/><w:kinsoku w:val="0"/><w:overflowPunct w:val="0"/><w:autoSpaceDE w:val="0"/><w:autoSpaceDN w:val="0"/><w:adjustRightInd w:val="0"/><w:snapToGrid w:val="1"/><w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/><w:ind w:left="0" w:right="0" w:firstLine="0"/><w:jc w:val="left"/></w:pPr>"#
+    }
+
+    static func canonicalDocx(lines: [String], sourceRows: Int, sourceLines: Int, sourceSha: String) -> Data {
+        let head = #"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"# + "\n"
+        var body = ""
+        body.reserveCapacity(lines.count * 160)
+        for line in lines {
+            if line.isEmpty { body += "<w:p>\(paraProps)</w:p>" }
+            else { body += "<w:p>\(paraProps)<w:r>\(runProps)<w:t xml:space=\"preserve\">\(xmlText(line))</w:t></w:r></w:p>" }
+        }
+        let L = CodeLayout.self
+        let sect = #"<w:sectPr><w:headerReference w:type="default" r:id="rIdHeader1"/><w:pgSz w:w="\#(L.pageWidthTwips)" w:h="\#(L.pageHeightTwips)"/><w:pgMar w:top="\#(L.marginTopTwips)" w:right="\#(L.marginRightTwips)" w:bottom="\#(L.marginBottomTwips)" w:left="\#(L.marginLeftTwips)" w:header="\#(L.headerTwips)" w:footer="\#(L.footerTwips)" w:gutter="0"/><w:cols w:space="425"/><w:docGrid w:type="lines" w:linePitch="\#(L.linePitchTwips)"/></w:sectPr>"#
+        let document = head + "<w:document xmlns:w=\"\(W)\" xmlns:r=\"\(R)\"><w:body>\(body)\(sect)</w:body></w:document>"
+        let headerRun = runProps.replacingOccurrences(of: "\"18\"", with: "\"22\"")
+        let header = head + "<w:hdr xmlns:w=\"\(W)\" xmlns:r=\"\(R)\"><w:p><w:pPr><w:spacing w:before=\"0\" w:after=\"0\"/><w:jc w:val=\"left\"/></w:pPr><w:r>\(headerRun)<w:t>软件名称</w:t></w:r></w:p></w:hdr>"
+        let styles = head + "<w:styles xmlns:w=\"\(W)\"><w:docDefaults><w:rPrDefault>\(runProps)</w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:before=\"0\" w:after=\"0\" w:line=\"240\" w:lineRule=\"auto\"/></w:pPr></w:pPrDefault></w:docDefaults><w:style w:type=\"paragraph\" w:default=\"1\" w:styleId=\"Normal\"><w:name w:val=\"Normal\"/><w:qFormat/></w:style></w:styles>"
+        let settings = head + "<w:settings xmlns:w=\"\(W)\"><w:defaultTabStop w:val=\"420\"/><w:characterSpacingControl w:val=\"doNotCompress\"/><w:compat><w:spaceForUL/><w:balanceSingleByteDoubleByteWidth/><w:doNotLeaveBackslashAlone/><w:ulTrailSpace/><w:doNotExpandShiftReturn/><w:adjustLineHeightInTable/><w:useFELayout/></w:compat></w:settings>"
+        func property(_ pid: Int, _ name: String, _ value: String) -> String {
+            "<property fmtid=\"{D5CDD505-2E9C-101B-9397-08002B2CF9AE}\" pid=\"\(pid)\" name=\"\(name)\">\(value)</property>"
+        }
+        let custom = head + "<Properties xmlns=\"http://schemas.openxmlformats.org/officeDocument/2006/custom-properties\" xmlns:vt=\"http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes\">"
+            + property(2, layoutMark, "<vt:lpwstr>\(layoutValue)</vt:lpwstr>")
+            + property(3, "ManualStudioSourceRows", "<vt:i4>\(sourceRows)</vt:i4>")
+            + property(4, "ManualStudioSourceLines", "<vt:i4>\(sourceLines)</vt:i4>")
+            + property(5, "ManualStudioSourceSha256", "<vt:lpwstr>\(sourceSha)</vt:lpwstr>")
+            + "</Properties>"
+        let app = head + "<Properties xmlns=\"http://schemas.openxmlformats.org/officeDocument/2006/extended-properties\" xmlns:vt=\"http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes\"><Application>ManualStudio</Application></Properties>"
+        let types = head + #"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/><Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/><Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/><Override PartName="/docProps/custom.xml" ContentType="application/vnd.openxmlformats-officedocument.custom-properties+xml"/></Types>"#
+        let rootRels = head + #"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/custom-properties" Target="docProps/custom.xml"/></Relationships>"#
+        let docRels = head + #"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="rIdSettings" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/><Relationship Id="rIdHeader1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/></Relationships>"#
+        // 固定时间戳：同一份模板每次整理出一模一样的文件，模板库靠指纹认出同一份
+        var zip = ZipWriter(date: Date(timeIntervalSince1970: 1_767_225_600))
+        for (name, text) in [("[Content_Types].xml", types), ("_rels/.rels", rootRels), ("docProps/app.xml", app), ("docProps/custom.xml", custom),
+                             ("word/_rels/document.xml.rels", docRels), ("word/styles.xml", styles), ("word/settings.xml", settings),
+                             ("word/header1.xml", header), ("word/document.xml", document)] {
+            zip.addFile(name, Data(text.utf8))
+        }
+        return zip.finish()
     }
 
     // MARK: 页眉页码
@@ -121,7 +186,8 @@ public struct CodeWordTemplate: Sendable {
         return ns.replacingCharacters(in: match.range, with: paragraph)
     }
 
-    public func write(project: String, software: String, printFont: String? = nil, printSize: Int? = nil) throws {
+    /// 写交付用的代码 Word：正文和版式原样，页眉换成软件名并加页码，记下「正好 60 页」供重新导出时核对。
+    public func write(project: String, software: String) throws {
         try assertSafeSoftwareName(software)
         let zip = try ZipReader(data)
         let tabPosition = Self.textWidthTwips(String(decoding: try zip.read("word/document.xml") ?? Data(), as: UTF8.self))
@@ -129,45 +195,11 @@ public struct CodeWordTemplate: Sendable {
         for entry in zip.entries {
             if entry.isDirectory { output.addDirectory(entry.name); continue }
             var bytes = try zip.read(entry)
-            if entry.name == "word/document.xml" {
-                // 只改分页属性，避免 XML DOM 重新序列化吞掉源代码的纯空格。
-                let original = String(decoding: bytes, as: UTF8.self)
-                let pattern = try NSRegularExpression(pattern: #"<w:p(?:\s[^>]*)?>[\s\S]*?</w:p>"#)
-                let matches = pattern.matches(in: original, range: NSRange(original.startIndex..., in: original))
-                guard matches.count == lines.count else { throw StudioError("Word 模板段落结构不支持固定分页") }
-                let patched = NSMutableString(string: original)
-                for (index, match) in matches.enumerated().reversed() {
-                    var paragraph = (original as NSString).substring(with: match.range)
-                    paragraph = Rx.replace(#"<w:pageBreakBefore\b[^>]*(?:/>|>\s*</w:pageBreakBefore>)"#, in: paragraph, with: "")
-                    if index > 0 && pageRanges.dropFirst().contains(where: { $0.lowerBound == index }) {
-                        if Rx.test(#"<w:pPr\s*/>"#, paragraph) {
-                            paragraph = Rx.replaceFirst(#"<w:pPr\s*/>"#, in: paragraph, with: "<w:pPr><w:pageBreakBefore/></w:pPr>")
-                        } else if Rx.test(#"<w:pPr(?:\s[^>]*)?>"#, paragraph) {
-                            paragraph = Rx.replaceFirst(#"(<w:pPr(?:\s[^>]*)?>)"#, in: paragraph, with: "$1<w:pageBreakBefore/>")
-                        } else {
-                            paragraph = Rx.replaceFirst(#"(<w:p(?:\s[^>]*)?>)"#, in: paragraph, with: "$1<w:pPr><w:pageBreakBefore/></w:pPr>")
-                        }
-                    }
-                    if let printSize {
-                        paragraph = Rx.replace(#"<w:sz w:val="[0-9]+"\s*/>"#, in: paragraph, with: "<w:sz w:val=\"\(printSize)\"/>")
-                        paragraph = Rx.replace(#"<w:szCs w:val="[0-9]+"\s*/>"#, in: paragraph, with: "<w:szCs w:val=\"\(printSize)\"/>")
-                    }
-                    if let printFont {
-                        paragraph = Rx.replace(#"<w:rFonts\b[^>]*/>"#, in: paragraph, with: "<w:rFonts w:ascii=\"\(xmlText(printFont))\" w:hAnsi=\"\(xmlText(printFont))\" w:eastAsia=\"\(xmlText(printFont))\" w:cs=\"\(xmlText(printFont))\"/>")
-                    }
-                    patched.replaceCharacters(in: match.range, with: paragraph)
-                }
-                bytes = Data((patched as String).utf8)
-            } else if entry.name.hasPrefix("word/header") && entry.name.hasSuffix(".xml") {
+            if entry.name.hasPrefix("word/header") && entry.name.hasSuffix(".xml") {
                 let header = try Self.parse(Data(Self.removePageNumber(String(decoding: bytes, as: UTF8.self)).utf8))
                 let texts = try header.nodes(forXPath: "//*[local-name()='t']")
                 for (index, text) in texts.enumerated() { text.stringValue = index == 0 ? software : "" }
                 bytes = Data(Self.addPageNumber(String(decoding: header.xmlData(options: [.nodePreserveAll]), as: UTF8.self), tabPosition: tabPosition).utf8)
-            } else if entry.name == "docProps/app.xml" {
-                let app = try Self.parse(bytes)
-                // 缓存页数不能作为验收依据，实际页数写进构建记录。
-                for node in try app.nodes(forXPath: "//*[local-name()='Pages']") { node.detach() }
-                bytes = app.xmlData(options: [.nodePreserveAll])
             } else if entry.name == "docProps/custom.xml" {
                 let custom = try Self.parse(bytes)
                 guard let root = custom.rootElement() else { throw StudioError("Word 自定义属性损坏") }
@@ -185,11 +217,11 @@ public struct CodeWordTemplate: Sendable {
             }
             output.addFile(entry.name, bytes)
         }
-        // 本机内置模板有自定义属性部件；其他模板需同样有该部件，便于重新导出时保留页数验收。
-        guard zip.entries.contains(where: { $0.name == "docProps/custom.xml" }) else {
-            throw StudioError("Word 代码模板缺少自定义属性，请使用内置新模板")
-        }
         try FS.write(Path.join(project, software, "\(software)\(CODE_SUFFIX).docx"), output.finish())
+    }
+
+    private static func parse(_ data: Data) throws -> XMLDocument {
+        try XMLDocument(data: data, options: [.nodePreserveAll, .nodeLoadExternalEntitiesNever])
     }
 }
 
@@ -204,11 +236,14 @@ private final class CodeTemplateLines: NSObject, XMLParserDelegate {
         if elementName == "body" { inBody = true }
         if inBody && elementName == "p" { inParagraph = true; line = "" }
         if inParagraph && elementName == "t" { inText = true }
-        if inParagraph && elementName == "tab" { line += "\t" }
+        if inParagraph && elementName == "tab" && !inTabs { line += "\t" }
+        if elementName == "tabs" { inTabs = true }
     }
+    private var inTabs = false
     func parser(_ parser: XMLParser, foundCharacters string: String) { if inText { line += string } }
     func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName qName: String?) {
         if elementName == "t" { inText = false }
+        if elementName == "tabs" { inTabs = false }
         if inBody && elementName == "p" { lines.append(line); inParagraph = false }
         if elementName == "body" { inBody = false }
     }
