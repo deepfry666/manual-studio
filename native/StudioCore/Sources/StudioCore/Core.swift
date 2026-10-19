@@ -287,7 +287,9 @@ public final class StudioCore: @unchecked Sendable {
         return models
     }
 
-    public func testVendor(_ id: String, model: String, vision: Bool) async throws -> (reply: String, ms: Double) {
+    /// 测试连接：先问一句话，再试一次「只输出 JSON」（规划、检查截图、写文字都要模型按 JSON 输出）。
+    /// jsonProblem 为 nil 表示能按 JSON 输出。
+    public func testVendor(_ id: String, model: String, vision: Bool) async throws -> (reply: String, ms: Double, jsonProblem: String?, diagnostics: String?) {
         let settings = try await settingsStore.get()
         guard let vendor = settings.llm.vendors.first(where: { $0.id == id }) else { throw StudioError("厂商不存在") }
         let apiKey = await secrets.get(SecretIds.llmVendor(id))
@@ -296,8 +298,24 @@ public final class StudioCore: @unchecked Sendable {
         let content: JSON = vision
             ? .array([["type": "text", "text": "这张图主要是什么颜色？只回答一个词。"], ["type": "image_url", "image_url": ["url": .string(vendor.preset == "zhipu" ? Rx.replaceFirst("^data:[^;]+;base64,", in: imageUrl, with: "") : imageUrl)]]])
             : "回复「连接正常」四个字。"
-        let result = try await chatCompletion(vendor: vendor, apiKey: apiKey, model: model, messages: [["role": "user", "content": content]], maxTokens: 50, jsonMode: false, http: http, timeoutSec: 60)
-        return (result.text.jsSlice(0, 100), nowMs() - started)
+        // 输出额度给宽一点：推理模型会先用掉一部分去「思考」，太少的话正文还没开始写就到上限了
+        let result = try await chatCompletion(vendor: vendor, apiKey: apiKey, model: model, messages: [["role": "user", "content": content]], maxTokens: 1024, jsonMode: false, http: http, timeoutSec: 60)
+        let ms = nowMs() - started
+        var jsonProblem: String?
+        var diagnostics: [String] = []
+        if let reason = result.emptyReason { diagnostics.append("【一句话测试】\(reason)\n\(result.diagnostics)") }
+        do {
+            let schema: JSON = ["type": "object", "required": ["ok", "steps"], "properties": ["ok": ["type": "boolean"], "steps": ["type": "array", "items": ["type": "string"]]]]
+            _ = try await chatJson(vendor: vendor, apiKey: apiKey, model: model, request: ChatJsonRequest(system: "你是接口测试助手。", user: "输出 JSON：ok 为 true，steps 为三个中文短句组成的数组，描述打开一个记账 App 的三个步骤。", schema: schema, temperature: 0.2, maxTokens: 1024), http: http)
+        } catch {
+            jsonProblem = messageOf(error)
+            if let detail = (error as? LlmError)?.detail { diagnostics.append("【按 JSON 输出测试】\n\(detail)") }
+            // 再要一次原始返回，看清楚线路到底回了什么
+            if let raw = try? await chatCompletion(vendor: vendor, apiKey: apiKey, model: model, messages: [["role": "system", "content": "只输出一个 JSON 对象。"], ["role": "user", "content": "输出 {\"ok\": true}"]], maxTokens: 1024, http: http, timeoutSec: 60) {
+                diagnostics.append("【按 JSON 输出时线路的原始返回】\n\(raw.diagnostics)")
+            }
+        }
+        return (result.text.jsSlice(0, 100), ms, jsonProblem, diagnostics.isEmpty ? nil : diagnostics.joined(separator: "\n\n"))
     }
 
     public func setAssignment(_ step: String, _ value: LlmAssignment?) async throws {

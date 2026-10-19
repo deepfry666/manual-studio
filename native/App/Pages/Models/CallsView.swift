@@ -22,6 +22,8 @@ struct CallsView: View {
     @State private var tab = "image"
     @State private var calls: [JSON] = []
     @State private var llmCalls: [JSON] = []
+    /// 失败的大模型调用：点开看模型当时回了什么
+    @State private var llmDetail: JSON?
 
     var rows: [CallRow] {
         calls.filter { $0["role"]?.string != "history" && (provider.isEmpty || $0["providerId"]?.string == provider) }
@@ -105,8 +107,29 @@ struct CallsView: View {
             TableColumn("模型") { row in Text(row.json["model"].text) }.width(min: 120, ideal: 200)
             TableColumn("耗时") { row in Text(formatSeconds(row.json["durationMs"]?.number.map { $0 / 1000 })).monospacedDigit() }.width(70)
             TableColumn("结果") { row in
-                if row.json["ok"].isTruthy { TagView(text: "成功", tone: .green) } else { Text(row.json["errorMessage"].text).foregroundStyle(.red).lineLimit(1).help(row.json["errorMessage"].text) }
+                if row.json["ok"].isTruthy { TagView(text: "成功", tone: .green) } else {
+                    HStack(spacing: 6) {
+                        Text(row.json["errorMessage"].text).foregroundStyle(.red).lineLimit(1).help(row.json["errorMessage"].text)
+                        Button("详情") { llmDetail = row.json }.buttonStyle(.borderless)
+                    }
+                }
             }
+        }
+        .sheet(isPresented: Binding(get: { llmDetail != nil }, set: { if !$0 { llmDetail = nil } })) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("「\(LLM_STEPS[llmDetail?["step"]?.string ?? ""]?.label ?? llmDetail?["step"].text ?? "")」失败").font(.headline)
+                Text(llmDetail?["errorMessage"].text ?? "").textSelection(.enabled)
+                Text("模型当时回的内容（摘录）").font(.subheadline.weight(.semibold))
+                ScrollView {
+                    Text(llmDetail?["errorDetail"]?.string ?? "这次失败没有记下模型回的内容（1.6.2 以前的记录，或者请求没到模型那一步就失败了）。")
+                        .font(.system(.callout, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(minWidth: 620, minHeight: 320)
+                HStack { Spacer(); Button("好") { llmDetail = nil }.keyboardShortcut(.defaultAction) }
+            }
+            .padding(20)
         }
     }
 }

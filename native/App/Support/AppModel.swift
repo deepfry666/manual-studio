@@ -44,6 +44,17 @@ struct AlertItem: Identifiable {
     var action: (() -> Void)? = nil
 }
 
+/// 更新代码材料的进度（一个一个处理）：哪些还在等、正在做哪个、做完和失败的
+struct CodeBatchProgress: Equatable {
+    var total: Int
+    var index = 0
+    var current: String?
+    var pending: Set<String>
+    var done = 0
+    var failed = 0
+    var finished = false
+}
+
 struct PdfJob: Equatable {
     let index: Int
     let total: Int
@@ -87,6 +98,8 @@ final class AppModel {
     var listTime = "all"
     var listBatch = "all"
     var listPickedDate = Date()
+    /// 按名单处理后只显示名单里的项目（nil 表示正常显示）
+    var listOnly: Set<String>?
     /// 刚看过的项目：回到列表时，即使状态变了不符合筛选也照样显示，直到换筛选或搜别的
     var stickyProject: String?
     /// 从项目页回到列表时选中它
@@ -118,6 +131,10 @@ final class AppModel {
     var callsRevision = 0
     var settingsRevision = 0
     var pdfJob: PdfJob?
+    var codeBatch: CodeBatchProgress?
+    /// 这次打开软件以来代码材料更新成功 / 失败的项目（列表上的小标签）
+    var codeUpdated: Set<String> = []
+    var codeFailed: [String: String] = [:]
     var toasts: [Toast] = []
     var alert: AlertItem?
     var migrationSummary: JSON?
@@ -127,6 +144,10 @@ final class AppModel {
     var devFeedbackOpen: Bool?
     var devNewMode: String?
     var devSelection: Set<String>?
+    /// 开发自检：打开「按名单选择」并填好名单（| 分隔）
+    var devNameListText: String?
+    /// 开发自检：对当前选中的项目执行「更新代码材料」（keep / balance）
+    var devCodeBatch: String?
 
     private var debounced: [String: Task<Void, Never>] = [:]
     private var batchNotified = false
@@ -366,6 +387,48 @@ final class AppModel {
             bump(dir)
         case "call":
             debounce("calls", 800) { [weak self] in self?.callsRevision += 1 }
+        case "code-template-batch":
+            switch event["phase"]?.string {
+            case "start":
+                let dirs = event["dirs"].items.compactMap(\.string)
+                codeBatch = CodeBatchProgress(total: dirs.count, pending: Set(dirs))
+                for dir in dirs { codeUpdated.remove(dir); codeFailed[dir] = nil }
+            case "end":
+                if var batch = codeBatch {
+                    // 批次中途出错没处理到的，也标出来
+                    for dir in batch.pending { codeFailed[dir] = "没有处理：\(event["error"]?.string ?? "批次中断")"; batch.failed += 1 }
+                    batch.pending = []
+                    batch.current = nil
+                    batch.finished = true
+                    codeBatch = batch
+                    let finished = batch
+                    Task { @MainActor [weak self] in
+                        try? await Task.sleep(for: .seconds(6))
+                        if self?.codeBatch == finished { self?.codeBatch = nil }
+                    }
+                }
+                scheduleProjectsReload(300)
+            default:
+                if var batch = codeBatch, let current = event["current"]?.string {
+                    batch.current = current
+                    batch.index = event["index"]?.int ?? batch.index
+                    codeBatch = batch
+                }
+            }
+        case "code-template-item":
+            guard let dir else { return }
+            if var batch = codeBatch {
+                batch.pending.remove(dir)
+                if batch.current == dir { batch.current = nil }
+                if event["status"]?.string == "done" { batch.done += 1 } else { batch.failed += 1 }
+                codeBatch = batch
+            }
+            switch event["status"]?.string {
+            case "done": codeUpdated.insert(dir); codeFailed[dir] = nil
+            case "failed": codeFailed[dir] = event["message"]?.string ?? "更新失败"
+            default: codeFailed[dir] = "跳过：\(event["message"]?.string ?? "")"
+            }
+            bump(dir)
         case "pdf-reexport":
             if let current = event["current"]?.string {
                 pdfJob = PdfJob(index: event["index"]?.int ?? 0, total: event["total"]?.int ?? 0, current: current)

@@ -99,6 +99,11 @@ extension StudioCore {
         var done: [JSON] = []
         var failed: [String] = []
         var skipped: [String] = []
+        // 进度：开始时告诉界面这批有哪些项目，之后每做完一个报一次结果（界面据此显示等待 / 正在更新 / 已更新 / 失败）
+        emit(.obj(["type": "code-template-batch", "phase": "start", "dirs": JSON(dirs), "current": .null, "index": 0, "total": .number(Double(dirs.count))]))
+        func report(_ dir: String, _ status: String, _ message: String? = nil, reassigned: String? = nil) {
+            emit(.obj(["type": "code-template-item", "projectDir": .string(dir), "status": .string(status), "message": JSON.orNull(message), "reassigned": JSON.orNull(reassigned)]))
+        }
         do {
             guard try codeTemplateTransactionDirectories(dataDir).isEmpty else { throw StudioError("存在尚未恢复的代码模板更新，请重启软件完成恢复后再试") }
             try? await migrateCodeTemplateLibrary()
@@ -133,20 +138,30 @@ extension StudioCore {
                 let queued = batch.list().items.contains { $0["projectDir"]?.string == dir && ["queued", "paused", "running"].contains($0["status"]?.string ?? "") }
                 if queued || pipeline.isRunning(dir) {
                     skipped.append("\(Path.basename(dir))：正在运行或排队，请完成或移出队列后重试")
+                    report(dir, "skipped", "正在运行或排队")
                     continue
                 }
-                guard let state = try? projectStore.read(dir) else { failed.append("\(Path.basename(dir))：项目不存在"); continue }
+                guard let state = try? projectStore.read(dir) else { failed.append("\(Path.basename(dir))：项目不存在"); report(dir, "failed", "项目不存在"); continue }
                 if isSubmitted(state) {
                     skipped.append("\(Path.basename(dir))：已提交，只读")
+                    report(dir, "skipped", "已提交，只读")
                     continue
                 }
                 do {
                     let current = codeSourceFor(state, settings).source?["path"]?.string ?? ""
                     let path: String
+                    /// 这次换成了哪个模板（没有 Word 模板的项目自动分的）
+                    var reassigned: String?
                     switch mode {
                     case "keep":
-                        guard Path.extname(current).lowercased() == ".docx" else { throw StudioError("这个项目的代码来源不是 Word 模板，不能按模板重排") }
-                        path = current
+                        if Path.extname(current).lowercased() == ".docx" {
+                            path = current
+                        } else {
+                            // 早期项目用的是纯文字代码或没有代码来源：按轮流平均分给它分一个模板库里的模板
+                            guard let entry = library.pick(&usage) else { throw StudioError("这个项目还没有 Word 模板，模板库里也没有启用的模板可分") }
+                            path = codeTemplateFile(dataDir, entry.id)
+                            reassigned = entry.label
+                        }
                     case "fixed": path = codeTemplateFile(dataDir, templateId ?? "")
                     case "balance":
                         if let old = library.entry(forPath: current) { usage[old.id, default: 1] -= 1 }
@@ -156,15 +171,18 @@ extension StudioCore {
                     }
                     let (source, chosen) = try template(at: path)
                     let result = try await pipeline.applyCodeTemplate(dir, source: source, template: chosen, fontPlan: fontPlan)
-                    done.append(result.merging(["dir": .string(dir)]))
+                    done.append(result.merging(["dir": .string(dir), "reassigned": JSON.orNull(reassigned)]))
+                    if let reassigned { try? await pipeline.log(dir, "原来没有 Word 代码模板，这次分到\(reassigned)") }
+                    report(dir, "done", reassigned: reassigned)
                 } catch {
                     let message = "\(Path.basename(dir))：\(messageOf(error))"
                     failed.append(message)
+                    report(dir, "failed", messageOf(error))
                     try? await pipeline.log(dir, "更新代码材料失败：\(messageOf(error))", "error")
                 }
             }
         } catch { failed.append(messageOf(error)) }
-        emit(.obj(["type": "code-template-batch", "current": .null, "index": .number(Double(dirs.count)), "total": .number(Double(dirs.count))]))
+        emit(.obj(["type": "code-template-batch", "phase": "end", "current": .null, "index": .number(Double(dirs.count)), "total": .number(Double(dirs.count)), "error": JSON.orNull(failed.last)]))
         return .obj(["done": .array(done), "failed": JSON(failed), "skipped": JSON(skipped)])
     }
 

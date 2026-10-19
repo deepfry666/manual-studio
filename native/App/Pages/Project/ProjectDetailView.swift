@@ -108,6 +108,11 @@ struct ProjectDetailView: View {
             } else if data.historyReadOnly {
                 Banner(.info, "这个历史项目只有交付包，没有文案和截图源文件，只能查看。")
             }
+            if model.codeBatch?.current == dir {
+                Banner(.info, "正在更新这个项目的代码材料…", message: "重排代码 Word、PDF 和 TXT 开头，几秒钟。")
+            } else if model.codeBatch?.pending.contains(dir) == true {
+                Banner(.info, "排在更新代码材料的队伍里，轮到它时会自动处理")
+            }
             if let lastError = data.state["lastError"]?.string, !running, !data.submitted {
                 let error = splitDiagnostics(lastError)
                 Banner(.error, "需要处理", message: error.text) {

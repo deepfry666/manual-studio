@@ -61,6 +61,7 @@ public final class BatchQueue: @unchecked Sendable {
         while active.withLock({ $0.count }) < limit {
             guard let item = state.withLock({ $0.items.first { $0["status"]?.string == "queued" } }), let id = item["id"]?.string else { break }
             let projectDir = item["projectDir"]?.string ?? ""
+            let mode = item["mode"]?.string ?? "continue"
             let startedAt = isoNow()
             mutate(id) { entry in
                 entry["status"] = "running"
@@ -72,7 +73,12 @@ public final class BatchQueue: @unchecked Sendable {
             notify()
             Task {
                 // 补发额度按「每个项目每次运行」计算，不在整个批量之间共用
-                let result = await self.pipeline.run(projectDir, RunOptions(reviewPlan: false))
+                let result: RunResult
+                do {
+                    result = await self.pipeline.run(projectDir, try await self.pipeline.batchRunOptions(projectDir, mode))
+                } catch {
+                    result = RunResult(status: "failed", error: messageOf(error))
+                }
                 let status = result.status == "done" ? "done" : result.status == "waiting" ? "needs-attention" : result.status == "canceled" ? "paused" : "failed"
                 let error: JSON = result.error.map(JSON.string) ?? (result.status == "waiting" ? .string("等待确认：\(result.step ?? "")") : .null)
                 let finishedAt = isoNow()
@@ -103,14 +109,15 @@ public final class BatchQueue: @unchecked Sendable {
     }
 
     @discardableResult
-    public func enqueue(_ projectDirs: [String], name: String = "") async -> String {
+    /// mode：continue 从停下的地方继续或更新；rewrite 只重写文字；redo 全部重做（见 Pipeline.batchRunOptions）
+    public func enqueue(_ projectDirs: [String], name: String = "", mode: String = "continue") async -> String {
         load()
         let batchId = "batch-\(randomHex(4))"
         let addedAt = isoNow()
         state.withLock { current in
             for projectDir in projectDirs {
                 if current.items.contains(where: { $0["projectDir"]?.string == projectDir && ["queued", "running"].contains($0["status"]?.string ?? "") }) { continue }
-                current.items.append(.obj(["id": .string(randomHex(6)), "projectDir": .string(projectDir), "batchId": .string(batchId), "batchName": .string(name), "status": "queued", "addedAt": .string(addedAt)]))
+                current.items.append(.obj(["id": .string(randomHex(6)), "projectDir": .string(projectDir), "batchId": .string(batchId), "batchName": .string(name), "mode": .string(mode), "status": "queued", "addedAt": .string(addedAt)]))
             }
         }
         await persist()

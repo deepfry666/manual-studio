@@ -447,6 +447,32 @@ extension Pipeline {
         try await markDirty(dir, ["receipt", "build"])
     }
 
+    /// 批量队列里每个项目怎么跑。
+    /// continue：从停下的地方继续或更新；rewrite：截图不动，所有说明和封面介绍按现在的规则重写；
+    /// redo：全部重做（重新规划、出图、写文字、出交付包），人工改过的文字也重写。
+    func batchRunOptions(_ dir: String, _ mode: String) async throws -> RunOptions {
+        switch mode {
+        case "rewrite", "redo":
+            try assertEditable(dir)
+            let ids = (try readPlan(dir))?["screens"].items.compactMap { $0["id"]?.string } ?? []
+            if mode == "rewrite", ids.isEmpty { throw StudioError("还没有界面规划，不能只重写文字；可以选「全部重做」") }
+            try await update(dir) { state in
+                for id in ids where state["screens"]?[id] != nil {
+                    state["screens"]?[id]?["textEdited"] = false
+                    if mode == "redo" { state["screens"]?[id]?["promptEdited"] = false }
+                }
+                state["overviewEdited"] = false
+                appendLog(&state, mode == "redo" ? "批量：全部重做" : "批量：只重写文字")
+            }
+            return mode == "redo"
+                // 全部重做：规划强制重来；截图也全部重新生成（新规划和旧的一样时也不沿用旧图）
+                ? RunOptions(from: "plan", force: ["plan"], forceScreens: (0..<20).map(screenId), reviewPlan: false, reason: "全部重做")
+                : RunOptions(from: "content", forceContent: ids + ["overview"], reviewPlan: false, reason: "只重写文字")
+        default:
+            return RunOptions(reviewPlan: false)
+        }
+    }
+
     public func rewriteContent(_ dir: String, _ ids: [String]) async throws -> Task<RunResult, Never> {
         try assertEditable(dir)
         for id in ids where id != "overview" { try assertScreenId(id) }

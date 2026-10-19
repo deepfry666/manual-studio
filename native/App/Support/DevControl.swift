@@ -60,6 +60,8 @@ final class DevControl {
             NSApp.windows.first { $0.isVisible && $0.canBecomeMain }?.miniaturize(nil)
         case "close":
             NSApp.windows.first { $0.isVisible && $0.canBecomeMain }?.performClose(nil)
+        case "codebatch": model.devCodeBatch = value + "#" + String(Date().timeIntervalSince1970)
+        case "namelist": model.devNameListText = value.replacingOccurrences(of: "|", with: "\n")
         case "query": model.listQuery = value
         case "status": model.listStatus = value
         case "stress": startStress(Int(value) ?? 0, model)

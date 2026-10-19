@@ -216,4 +216,28 @@ struct V161ParseTests {
         #expect(fastParseISO("2026-13-16T06:26:35.359Z") == nil)
         #expect(parseISO("不是时间") == nil)
     }
+
+    /// 界面自检用（可选）：MS_SEED_BUILT_DIR 指向一个空的数据目录，放进模板库和 8 个「已出交付包」的假项目，用来看更新代码材料的进度
+    @Test("界面自检数据：已出交付包的假项目", .enabled(if: ProcessInfo.processInfo.environment["MS_SEED_BUILT_DIR"] != nil), .timeLimit(.minutes(3)))
+    func seedBuilt() async throws {
+        let dataDir = ProcessInfo.processInfo.environment["MS_SEED_BUILT_DIR"]!
+        let core = try await StudioCore(dataDir: dataDir, secrets: MemorySecrets(), http: MockNetwork())
+        try await core.updateSettings(["workspaceDir": .string(Path.join(dataDir, "workspace"))])
+        try await core.importCodeTemplate(testCodeTemplatePath)
+        let second = Path.join(dataDir, "第二份.docx")
+        try FS.write(second, makeTestCodeTemplate(variant: 5))
+        _ = try await core.addCodeTemplates([second])
+        for index in 1...8 {
+            let name = "进度演示\(index) V1.0"
+            let dir = try await core.createProject(["softwareName": .string(name), "screenCount": 2])
+            let bundle = Path.join(dir, name)
+            try FS.write(Path.join(bundle, "\(name)指南.docx"), "示意")
+            try FS.write(Path.join(bundle, "\(name)指南.txt"), "【编程语言】JAVA\r\n【源程序量】2888行\r\n【软件的主要功能】\r\n演示\r\n")
+            try await core.projectStore.update(dir) { state in
+                state["status"] = "done"
+                state["lastBuild"] = ["at": .string(isoNow()), "files": []]
+                if index > 5 { state["request"]?["codeSource"] = .null; state["request"]?["codeSourceLocked"] = true }
+            }
+        }
+    }
 }

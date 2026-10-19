@@ -151,7 +151,9 @@ public final class Pipeline: @unchecked Sendable {
             }
             return result
         } catch {
-            await llmLog.append(.obj(["step": .string(step), "projectDir": .string(dir), "vendorId": .string(llm.vendor.id), "model": .string(llm.model), "ok": false, "durationMs": .number(nowMs() - started), "errorMessage": .string(messageOf(error).jsSlice(0, 300))]))
+            let detail = (error as? LlmError)?.detail
+            await llmLog.append(.obj(["step": .string(step), "projectDir": .string(dir), "vendorId": .string(llm.vendor.id), "model": .string(llm.model), "ok": false, "durationMs": .number(nowMs() - started), "errorMessage": .string(messageOf(error).jsSlice(0, 400)), "errorKind": JSON.orNull((error as? LlmError)?.kind), "errorDetail": JSON.orNull(detail?.jsSlice(0, 6000))]))
+            if let detail { try? await log(dir, "「\(LLM_STEPS[step]?.label ?? step)」失败现场（模型回的内容摘录）：\n\(detail.jsSlice(0, 1500))", "warn") }
             throw error
         }
     }

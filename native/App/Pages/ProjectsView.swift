@@ -31,6 +31,25 @@ struct ProjectsView: View {
     @State private var beforeClick: Set<String>?
     @State private var handledClick: TimeInterval = 0
     @State private var startPlan: StartPlan?
+    /// 多选后「只重写文字」「全部重做」的确认
+    @State private var modePlan: ModePlan?
+
+    struct ModePlan: Identifiable {
+        let id = UUID()
+        let mode: String
+        let dirs: [String]
+        let skipped: [String]
+        let images: Int
+        var title: String { mode == "redo" ? "全部重做 \(dirs.count) 个项目？" : "只重写 \(dirs.count) 个项目的文字？" }
+        var message: String {
+            let what = mode == "redo"
+                ? "重新规划、出图、写文字、出交付包，人工改过的文字也重写。大约生成 \(images) 张截图，花费和新建 \(dirs.count) 个项目差不多。"
+                : "截图不动，所有说明和封面介绍按现在的规则重写，只调用写文字的大模型，不出图。"
+            let skip = skipped.isEmpty ? "" : "\n\n跳过 \(skipped.count) 个：" + skipped.prefix(8).joined(separator: "、") + (skipped.count > 8 ? " 等" : "")
+            return what + "进批量队列，可以暂停、继续。" + skip
+        }
+    }
+    @State private var nameListOpen = false
 
     /// 开始处理前的清单：哪些会开始，哪些跳过、为什么
     struct StartPlan: Identifiable {
@@ -60,6 +79,11 @@ struct ProjectsView: View {
 
     var rows: [ProjectRow] {
         let filtered = model.projects.filter { project in
+            // 按名单处理后：只看名单里的这批，其他筛选暂不生效
+            if let only = model.listOnly {
+                guard only.contains(project.dir) else { return false }
+                return query.isEmpty || project.name.lowercased().contains(query.lowercased())
+            }
             if !query.isEmpty {
                 // 搜索时在全部项目里找，不受状态、时间、批次筛选限制
                 return project.name.lowercased().contains(query.lowercased())
@@ -159,11 +183,18 @@ struct ProjectsView: View {
             VStack(spacing: 10) {
                 SetupHint()
                 QueueBar()
-                if !query.isEmpty, filtersActive {
+                if let only = model.listOnly {
+                    Banner(.info, "只显示名单里的 \(only.count) 个项目", message: "状态、时间、批次筛选暂不生效。") {
+                        Button("显示全部") { model.listOnly = nil }.buttonStyle(.glass)
+                    }
+                }
+                if !query.isEmpty, filtersActive, model.listOnly == nil {
                     Banner(.info, "正在全部项目里搜索", message: "状态、时间、批次筛选暂不生效；清空搜索后恢复。")
                 }
-                if applyingCodeTemplate {
-                    Banner(.info, "正在更新代码材料，逐份检查 PDF 正好 60 页、每页 50 行；完成后会显示结果")
+                if let batch = model.codeBatch {
+                    CodeBatchBanner(batch: batch, name: { dir in model.projects.first { $0.dir == dir }?.name ?? Path.basename(dir) })
+                } else if applyingCodeTemplate {
+                    Banner(.info, "正在准备更新代码材料…")
                 }
                 if let job = model.pdfJob {
                     Banner(.info, "正在重新导出 PDF：\(job.index + 1)/\(job.total)（\(model.projects.first { $0.dir == job.current }?.name ?? "")）")
@@ -198,6 +229,11 @@ struct ProjectsView: View {
         .searchable(text: Binding(get: { model.listQuery }, set: { model.listQuery = $0 }), placement: .toolbar, prompt: "在全部项目里搜索软件名")
         // 自己换了搜索或筛选，刚看过的项目就不再特意留着
         .onChange(of: "\(model.listQuery)|\(model.listStatus)|\(model.listTime)|\(model.listBatch)") { _, _ in model.stickyProject = nil }
+        .onChange(of: model.devNameListText) { _, value in if value != nil { nameListOpen = true } }
+        .onChange(of: model.devCodeBatch) { _, value in
+            guard let mode = value?.components(separatedBy: "#").first, !selection.isEmpty else { return }
+            startCodeTemplateBatch(rows.map(\.dir).filter(selection.contains), mode: mode, templateId: nil)
+        }
         .onChange(of: model.listSelectRequest) { _, dir in
             guard let dir else { return }
             selection = [dir]
@@ -211,6 +247,25 @@ struct ProjectsView: View {
             Button("开始") { startPdfReexport(pdfTargets ?? []) }
         } message: {
             Text("重新导出 PDF；旧指南存在截图超宽时，用已有截图和正文重排指南 Word。TXT、代码 Word 和原截图不变，不调用 AI，旧文件先归档。每个项目依次处理。")
+        }
+        .confirmationDialog(modePlan?.title ?? "", isPresented: Binding(get: { modePlan != nil }, set: { if !$0 { modePlan = nil } }), titleVisibility: .visible) {
+            Button(modePlan?.mode == "redo" ? "全部重做" : "只重写文字") {
+                guard let plan = modePlan, let core = model.core else { return }
+                modePlan = nil
+                Task {
+                    await core.batch.enqueue(plan.dirs, name: plan.mode == "redo" ? "多选：全部重做" : "多选：只重写文字", mode: plan.mode)
+                    model.toast(.success, "已开始：\(plan.mode == "redo" ? "全部重做" : "只重写文字") \(plan.dirs.count) 个项目")
+                    clearSelection()
+                }
+            }
+        } message: {
+            Text(modePlan?.message ?? "")
+        }
+        .sheet(isPresented: $nameListOpen) {
+            NameListSheet { code, rewrite, redo, all in
+                nameListOpen = false
+                runNameList(code: code, rewrite: rewrite, redo: redo, all: all)
+            } cancel: { nameListOpen = false }
         }
         .sheet(item: $codeTemplateTargets) { request in
             CodeTemplateBatchSheet(dirs: request.dirs, skipped: request.skipped) { mode, templateId in
@@ -231,7 +286,7 @@ struct ProjectsView: View {
         }
     }
 
-    var hasTopContent: Bool { (!query.isEmpty && filtersActive) || applyingCodeTemplate || model.pdfJob != nil || QueueBar.visible(model) || setupMissing }
+    var hasTopContent: Bool { model.codeBatch != nil || model.listOnly != nil || (!query.isEmpty && filtersActive) || applyingCodeTemplate || model.pdfJob != nil || QueueBar.visible(model) || setupMissing }
     var setupMissing: Bool { SetupHint.missing(model).isEmpty == false }
 
     var subtitle: String {
@@ -271,7 +326,7 @@ struct ProjectsView: View {
             }
             .width(min: 200, ideal: 260)
             TableColumn("状态", value: \.statusSortKey) { row in statusTag(row) }
-                .width(min: 76, ideal: 90)
+                .width(min: 90, ideal: 180)
             TableColumn("进度") { row in ProgressCell(row: row) }
                 .width(min: 150, ideal: 180)
             TableColumn("用时") { row in
@@ -349,7 +404,20 @@ struct ProjectsView: View {
         } else {
             let info = PROJECT_STATUS[row.status] ?? (row.status, .neutral)
             HStack(spacing: 4) {
-                TagView(text: info.label, tone: info.tone)
+                if model.codeBatch?.current == row.dir {
+                    // 正在更新代码材料：一个一个处理，正在做的这个
+                    ProgressView().controlSize(.mini)
+                    TagView(text: "正在更新代码", tone: .blue)
+                } else if model.codeBatch?.pending.contains(row.dir) == true {
+                    TagView(text: "等待更新代码", tone: .neutral)
+                } else {
+                    TagView(text: info.label, tone: info.tone)
+                    if let reason = model.codeFailed[row.dir] {
+                        TagView(text: reason.hasPrefix("跳过") ? "代码没更新" : "代码更新失败", tone: .red).help(reason)
+                    } else if model.codeUpdated.contains(row.dir) {
+                        TagView(text: "代码已更新", tone: .green).help("这次打开软件以来更新过代码材料")
+                    }
+                }
                 if row.submitted { TagView(text: "已提交", tone: .purple).help("已提交：只读，批量操作会跳过") }
             }
         }
@@ -401,6 +469,8 @@ struct ProjectsView: View {
         Button("重新导出 PDF") { askPdf(targets) }
         Button("更新代码材料…") { askCodeTemplate(targets) }
             .disabled(applyingCodeTemplate || model.pdfJob != nil)
+        Button("只重写文字…") { askMode(targets, "rewrite") }
+        Button("全部重做…") { askMode(targets, "redo") }
         Divider()
         if targets.contains(where: { !$0.submitted && !$0.historyReadOnly }) {
             Button("标记为已提交") { setSubmitted(targets, true) }
@@ -582,6 +652,10 @@ struct ProjectsView: View {
         }
         if selection.isEmpty {
             ToolbarItem(placement: .primaryAction) {
+                Button { nameListOpen = true } label: { Label("按名单选择", systemImage: "list.bullet.clipboard") }
+                    .help("按名单选择：粘一份软件名清单，一次找出这些项目，每个选一种处理")
+            }
+            ToolbarItem(placement: .primaryAction) {
                 Button {
                     let dirs = model.projects.filter { $0.hasBundle && $0.status != "missing" && ($0.status == "done" || $0.origin == "imported") }.map(\.dir)
                     if dirs.isEmpty { model.toast(.info, "还没有已完成的项目") } else { exportDirs = ExportRequest(dirs: dirs) }
@@ -630,6 +704,23 @@ struct ProjectsView: View {
         }
     }
 
+    /// 按名单处理：不花钱的马上做，要调用 AI 的进批量队列；列表只显示这一批
+    func runNameList(code: [String], rewrite: [String], redo: [String], all: [String]) {
+        model.listOnly = Set(all)
+        clearSelection()
+        if !code.isEmpty { startCodeTemplateBatch(code, mode: "keep", templateId: nil) }
+        guard let core = model.core else { return }
+        Task {
+            if !rewrite.isEmpty { await core.batch.enqueue(rewrite, name: "名单：只重写文字", mode: "rewrite") }
+            if !redo.isEmpty { await core.batch.enqueue(redo, name: "名单：全部重做", mode: "redo") }
+            var parts: [String] = []
+            if !code.isEmpty { parts.append("更新代码材料 \(code.count) 个") }
+            if !rewrite.isEmpty { parts.append("只重写文字 \(rewrite.count) 个") }
+            if !redo.isEmpty { parts.append("全部重做 \(redo.count) 个") }
+            if !parts.isEmpty { model.toast(.success, "已开始：" + parts.joined(separator: "，")) }
+        }
+    }
+
     func askPdf(_ targets: [ProjectRow]) {
         let dirs = targets.filter { $0.hasBundle && $0.status != "running" && !$0.submitted }.map(\.dir)
         if dirs.isEmpty { model.toast(.info, "选中的项目没有交付包、正在运行或已提交") } else {
@@ -663,6 +754,25 @@ struct ProjectsView: View {
         }
     }
 
+    /// 多选后只重写文字 / 全部重做：已提交、只读历史项目、正在运行或排队的跳过；只重写文字还要有截图
+    func askMode(_ targets: [ProjectRow], _ mode: String) {
+        var dirs: [String] = []
+        var skipped: [String] = []
+        var images = 0
+        for row in targets {
+            if row.submitted { skipped.append("\(row.name)（已提交）") }
+            else if row.historyReadOnly { skipped.append("\(row.name)（只有交付包的历史项目）") }
+            else if row.status == "running" || row.queue != nil && row.queue?["status"]?.string != "done" { skipped.append("\(row.name)（正在运行或排队）") }
+            else if mode == "rewrite", row.step("plan") != "done" { skipped.append("\(row.name)（还没有界面规划）") }
+            else {
+                dirs.append(row.dir)
+                images += max(row.json["screens"]?.int ?? 7, 1)
+            }
+        }
+        if dirs.isEmpty { model.toast(.info, "选中的项目都不能处理：" + skipped.prefix(3).joined(separator: "、")) }
+        else { modePlan = ModePlan(mode: mode, dirs: dirs, skipped: skipped, images: images) }
+    }
+
     func startCodeTemplateBatch(_ dirs: [String], mode: String, templateId: String?) {
         guard let core = model.core, !applyingCodeTemplate else { return }
         applyingCodeTemplate = true
@@ -674,12 +784,14 @@ struct ProjectsView: View {
             let failed = result["failed"].items.map(\.jsString)
             let skipped = result["skipped"].items.map(\.jsString)
             let fontWarnings = done.flatMap { $0["warnings"].items.map(\.jsString) }
+            let reassigned = done.filter { $0["reassigned"]?.string != nil }
+            let reassignNote = reassigned.isEmpty ? "" : "；其中 \(reassigned.count) 个原来没有 Word 模板，已平均分到模板库里的模板"
             selection.subtract(done.compactMap { $0["dir"]?.string })
             let details = skipped.map { "跳过：\($0)" } + failed.map { "失败：\($0)" } + fontWarnings
             if !details.isEmpty {
-                model.alert = AlertItem(title: "更新代码材料：成功 \(done.count) 个，跳过 \(skipped.count) 个，失败 \(failed.count) 项", message: details.joined(separator: "\n"))
+                model.alert = AlertItem(title: "更新代码材料：成功 \(done.count) 个，跳过 \(skipped.count) 个，失败 \(failed.count) 项", message: (reassignNote.isEmpty ? "" : String(reassignNote.dropFirst()) + "。\n") + details.joined(separator: "\n"))
             } else {
-                model.toast(.success, "已更新 \(done.count) 个项目：代码 PDF 都是 60 页、每页 50 行，TXT 换成 9 行开头，旧材料已归档")
+                model.toast(.success, "已更新 \(done.count) 个项目：代码 PDF 都是 60 页、每页 50 行，TXT 换成 9 行开头，旧材料已归档\(reassignNote)")
             }
         }
     }
@@ -838,7 +950,7 @@ struct CodeTemplateBatchSheet: View {
         VStack(alignment: .leading, spacing: 14) {
             Text("更新 \(dirs.count) 个项目的代码材料").font(.headline)
             Picker("", selection: $mode) {
-                Text("保持各自的模板，按 60 页 × 每页 50 行重排").tag("keep")
+                Text("保持各自的模板，按 60 页 × 每页 50 行重排（没有 Word 模板的自动平均分一个）").tag("keep")
                 Text("在启用的模板里平均分配").tag("balance")
                 Text("全部换成同一个模板").tag("fixed")
             }
@@ -871,5 +983,31 @@ struct CodeTemplateBatchSheet: View {
         .padding(20)
         .frame(width: 480)
         .onAppear { templateId = enabled.first?.id ?? "" }
+    }
+}
+
+/// 更新代码材料的进度条：一个一个处理，显示做到第几个、正在做哪个；做完显示结果，几秒后收起
+struct CodeBatchBanner: View {
+    let batch: CodeBatchProgress
+    let name: (String) -> String
+
+    var body: some View {
+        let processed = batch.done + batch.failed
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: batch.finished ? (batch.failed == 0 ? "checkmark.circle.fill" : "exclamationmark.triangle.fill") : "doc.badge.gearshape")
+                    .foregroundStyle(batch.finished ? (batch.failed == 0 ? Color.green : Color.orange) : Color.accentColor)
+                if batch.finished {
+                    Text("代码材料更新完了：成功 \(batch.done) 个\(batch.failed > 0 ? "，没更新 \(batch.failed) 个（列表里标红的，鼠标停上去看原因）" : "")").fontWeight(.medium)
+                } else {
+                    Text("正在更新代码材料 \(min(processed + 1, batch.total)) / \(batch.total)\(batch.current.map { "：" + name($0) } ?? "")").fontWeight(.medium)
+                }
+                Spacer()
+                if !batch.finished { Text("一个一个处理，每个几秒钟").font(.caption).foregroundStyle(.secondary) }
+            }
+            ProgressView(value: Double(processed), total: Double(max(batch.total, 1)))
+        }
+        .padding(12)
+        .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
     }
 }
