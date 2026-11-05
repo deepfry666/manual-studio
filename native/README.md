@@ -1,10 +1,10 @@
 # 软件指南生成器
 
-SwiftUI 写的 macOS 原生 App，是现在唯一维护和发版的版本。功能和 Electron 旧版一致；Electron 旧版定档在 git 标签 `electron-v0.1.0-final`，不再修改、不再发版。
+SwiftUI 写的 macOS 原生 App，是现在唯一维护和发版的版本。首次使用请先看[原生版快速入门](../docs/原生版快速入门.md)。Electron 旧版定档在 git 标签 `electron-v0.1.0-final`，不再修改、不再发版。
 
 ## 打包和运行
 
-需要 Xcode 27（macOS 27 SDK），App 最低支持 macOS 26。
+需要 Xcode 27（macOS 27 SDK），App 最低支持 macOS 26。以下命令从仓库的 `native/` 目录运行。
 
 ```bash
 scripts/build-app.sh            # 生成 dist/软件指南生成器.app
